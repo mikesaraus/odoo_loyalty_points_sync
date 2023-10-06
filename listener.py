@@ -115,30 +115,40 @@ def updateLoyaltyPoints(server_name, odoo, db, customer_barcode, new_customer_po
         print(f"Error: {str(e)}")
         
 def odoo_createFn(odoo_models, odoo_uid, server_name, odoo, db, customer_barcode, new_customer_points, parsed_payload):
+    print(f"{server_name}: Creating new customer.")
     # Create res_partner
-    profile_payload = parsed_payload["profile"]["partner"]
-    del profile_payload["id"]
+    # profile_payload = parsed_payload["profile"]["partner"]
+    # del profile_payload["id"]
+    profile_payload = {
+        "name": parsed_payload["profile"]["partner"]["name"],
+        "display_name": parsed_payload["profile"]["partner"]["display_name"],
+        "tz": parsed_payload["profile"]["partner"]["tz"]
+    }
     tbl_customer_id = odoo_models.execute_kw(db["name"], odoo_uid, odoo["password"], 'res.partner', 'create', [profile_payload])
+    print(f"{server_name}: Created customer's profile - {tbl_customer_id}")
 
     # Create ir_property
     profile_barcode = {
         "res_id": tbl_customer_id,
+        "value_text": customer_barcode,
+        "fields_id": parsed_payload["profile"]["barcode"]["fields_id"],
         "name": parsed_payload["profile"]["barcode"]["name"],
-        "type": parsed_payload["profile"]["barcode"]["type"],
-        "value_text":parsed_payload["profile"]["barcode"]["value_text"] 
+        "type": parsed_payload["profile"]["barcode"]["type"]
     }
     odoo_models.execute_kw(db["name"], odoo_uid, odoo["password"], 'ir.property', 'create', [profile_barcode])
+    print(f"{server_name}: Created customer's barcode details")
 
     # Create loyalty_card
     profile_loyalty = {
         "partner_id": tbl_customer_id,
-        "points": parsed_payload["new"]["points"]
+        "points": new_customer_points,
+        "code": parsed_payload["new"]["code"]
     }
-    odoo_models.execute_kw(db["name"], odoo_uid, odoo["password"], 'loyalty_card', 'create', [profile_loyalty])
-    
-    odoo_updateFn(odoo_models, tbl_customer_id, odoo_uid, server_name, odoo, db, customer_barcode, new_customer_points)
+    odoo_models.execute_kw(db["name"], odoo_uid, odoo["password"], 'loyalty.card', 'create', [profile_loyalty])
+    print(f"{server_name}: Created customer's loyalty details")
 
 def odoo_updateFn(odoo_models, tbl_customer_id, odoo_uid, server_name, odoo, db, customer_barcode, new_customer_points):
+    print(f"{server_name}: Updating existing customer.")
     # Search for the id in loyalty card table
     tbl_loyalty_card_ids = odoo_models.execute_kw(db["name"], odoo_uid, odoo["password"], 'loyalty.card', 'search', [[['partner_id', '=', tbl_customer_id]]], {'limit': 1})
     print(f"{server_name}: Local customer's loyalty card id found: {tbl_loyalty_card_ids}")
@@ -222,12 +232,12 @@ def listen():
                         # Update all Odoo servers using odoo API
                         for server in all_server:
                             print(f"Connecting to server: {server['name']} - ({server['url']})")
-                            odoo = { 
+                            odoo = {
                                 "url": server["url"],
                                 "user": server["user"],
                                 "password": server["password"]
                             }
-                            db = { 
+                            db = {
                                 "name": server["database"],
                             }
                             updateLoyaltyPoints(server["name"], odoo, db, customer_barcode, customer_points_new, parsed_payload)
