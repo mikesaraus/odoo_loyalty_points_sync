@@ -87,38 +87,66 @@ class DateTimeEncoder(json.JSONEncoder):
             return obj.isoformat()
         return super().default(obj)
     
-def updateLoyaltyPoints(odoo_url, odoo_dbname, odoo_user, odoo_password,customer_barcode, new_customer_points, server_name):
+def updateLoyaltyPoints(server_name, odoo, db, customer_barcode, new_customer_points, parsed_payload):
     try:
-        if server_name:
-            server_name = f"{server_name}: "
-
         # Odoo API
-        odoo_common = xmlrpc.client.ServerProxy('{}/xmlrpc/2/common'.format(odoo_url))
-        print(f"{server_name}Odoo Server: {odoo_common.version()}")
+        odoo_common = xmlrpc.client.ServerProxy('{}/xmlrpc/2/common'.format(odoo["url"]))
+        print(f"{server_name}: Odoo Server: {odoo_common.version()}")
 
-        odoo_uid = odoo_common.authenticate(odoo_dbname, odoo_user, odoo_password, {})
-        print(f"{server_name}Odoo UID: {odoo_uid}")
-        odoo_models = xmlrpc.client.ServerProxy('{}/xmlrpc/2/object'.format(odoo_url))
+        odoo_uid = odoo_common.authenticate(db["name"], odoo["user"], odoo["password"], {})
+        print(f"{server_name}: Odoo UID: {odoo_uid}")
+        odoo_models = xmlrpc.client.ServerProxy('{}/xmlrpc/2/object'.format(odoo["url"]))
 
         # Search the barcode from table `ir_property` and get local customer identity
-        print(f"{server_name}Searching for customer with barcode: {customer_barcode}")
-        tbl_customer_barcode = odoo_models.execute_kw(odoo_dbname, odoo_uid, odoo_password, 'ir.property', 'search_read', [[['value_text', '=', customer_barcode],['name', '=', 'barcode']]], {'fields': ['res_id'], 'limit': 1})
+        print(f"{server_name}: Searching for customer with barcode: {customer_barcode}")
+        tbl_customer_barcode = odoo_models.execute_kw(db["name"], odoo_uid, odoo["password"], 'ir.property', 'search_read', [[['value_text', '=', customer_barcode],['name', '=', 'barcode']]], {'fields': ['res_id'], 'limit': 1})
         
         if tbl_customer_barcode:
+            # Update existing user
             tbl_customer_id = int(tbl_customer_barcode[0]["res_id"].split(',')[1])
-            print(f"{server_name}Local customer id found: {tbl_customer_id}")
-
-            # Search for the id in loyalty card table
-            tbl_loyalty_card_ids = odoo_models.execute_kw(odoo_dbname, odoo_uid, odoo_password, 'loyalty.card', 'search', [[['partner_id', '=', tbl_customer_id]]], {'limit': 1})
-            print(f"{server_name}Local customer's loyalty card id found: {tbl_loyalty_card_ids}")
+            print(f"{server_name}: Local customer id found: {tbl_customer_id}")
             
-            # Update loyalty points
-            odoo_models.execute_kw(odoo_dbname, odoo_uid, odoo_password, 'loyalty.card', 'write', [tbl_loyalty_card_ids, {'points': new_customer_points}])
-            print(f"{server_name}Local customer's loyalty point updated: {new_customer_points}")
+            odoo_updateFn(odoo_models, tbl_customer_id, odoo_uid, server_name, odoo, db, customer_barcode, new_customer_points)
+        else:
+            # Create a new user
+            odoo_createFn(odoo_models, odoo_uid, server_name, odoo, db, customer_barcode, new_customer_points, parsed_payload)
 
     except Exception as e:
         print(f"Error: {str(e)}")
         
+def odoo_createFn(odoo_models, odoo_uid, server_name, odoo, db, customer_barcode, new_customer_points, parsed_payload):
+    # Create res_partner
+    profile_payload = parsed_payload["profile"]["partner"]
+    del profile_payload["id"]
+    tbl_customer_id = odoo_models.execute_kw(db["name"], odoo_uid, odoo["password"], 'res.partner', 'create', [profile_payload])
+
+    # Create ir_property
+    profile_barcode = {
+        "res_id": tbl_customer_id,
+        "name": parsed_payload["profile"]["barcode"]["name"],
+        "type": parsed_payload["profile"]["barcode"]["type"],
+        "value_text":parsed_payload["profile"]["barcode"]["value_text"] 
+    }
+    odoo_models.execute_kw(db["name"], odoo_uid, odoo["password"], 'ir.property', 'create', [profile_barcode])
+
+    # Create loyalty_card
+    profile_loyalty = {
+        "partner_id": tbl_customer_id,
+        "points": parsed_payload["new"]["points"]
+    }
+    odoo_models.execute_kw(db["name"], odoo_uid, odoo["password"], 'loyalty_card', 'create', [profile_loyalty])
+    
+    odoo_updateFn(odoo_models, tbl_customer_id, odoo_uid, server_name, odoo, db, customer_barcode, new_customer_points)
+
+def odoo_updateFn(odoo_models, tbl_customer_id, odoo_uid, server_name, odoo, db, customer_barcode, new_customer_points):
+    # Search for the id in loyalty card table
+    tbl_loyalty_card_ids = odoo_models.execute_kw(db["name"], odoo_uid, odoo["password"], 'loyalty.card', 'search', [[['partner_id', '=', tbl_customer_id]]], {'limit': 1})
+    print(f"{server_name}: Local customer's loyalty card id found: {tbl_loyalty_card_ids}")
+    
+    # Update loyalty points
+    odoo_models.execute_kw(db["name"], odoo_uid, odoo["password"], 'loyalty.card', 'write', [tbl_loyalty_card_ids, {'points': new_customer_points}])
+    print(f"{server_name}: Local customer's loyalty point updated: {new_customer_points}")
+
 def getCustomerProfile(id):
     try:
         local_db_connection = psycopg2.connect(
@@ -194,7 +222,15 @@ def listen():
                         # Update all Odoo servers using odoo API
                         for server in all_server:
                             print(f"Connecting to server: {server['name']} - ({server['url']})")
-                            updateLoyaltyPoints(server["url"], server["database"], server["user"], server["password"], customer_barcode, customer_points_new, server["name"])
+                            odoo = { 
+                                "url": server["url"],
+                                "user": server["user"],
+                                "password": server["password"]
+                            }
+                            db = { 
+                                "name": server["database"],
+                            }
+                            updateLoyaltyPoints(server["name"], odoo, db, customer_barcode, customer_points_new, parsed_payload)
                             
                         # Send a POST request to the webhook with the event payload
                         if webhook_url:
