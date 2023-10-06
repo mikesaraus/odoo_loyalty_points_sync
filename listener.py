@@ -32,7 +32,7 @@ parser.add_argument("--json_server_list_src", type=str, help="A json file holdin
 args = parser.parse_args()
 
 # JSON server List
-json_server_list_src = args.json_server_list_src if args.json_server_list_src is not None else os.environ.get('json_server_list_src')
+json_server_list_src = args.json_server_list_src if args.json_server_list_src is not None else os.environ.get('json_server_list_src', 'servers.json')
 try:
     if json_server_list_src:
         with open(json_server_list_src, 'r') as json_file:
@@ -47,8 +47,7 @@ except json.JSONDecodeError as e:
     print(f"Error decoding JSON: {e}")
     sys.exit(1)
 
-# Webhook url
-webhook_url = args.webhook if args.webhook is not None else os.environ.get('webhook')
+
 # Webhook url
 webhook_url = args.webhook if args.webhook is not None else os.environ.get('webhook')
 # PosgresSQL Notification Channel Name
@@ -62,8 +61,8 @@ trigger_name = args.psql_trigger if args.psql_trigger is not None else os.enviro
 dbname = args.dbname if args.dbname is not None else os.environ.get('dbname')
 dbuser = args.dbuser if args.dbuser is not None else os.environ.get('dbuser')
 dbpassword = args.dbpassword if args.dbpassword is not None else os.environ.get('dbpassword')
-dbhost = args.dbhost if args.dbhost is not None else os.environ.get('dbhost')
-dbport = args.dbport if args.dbport is not None else os.environ.get('dbport')
+dbhost = args.dbhost if args.dbhost is not None else os.environ.get('dbhost', 'localhost')
+dbport = int(args.dbport if args.dbport is not None else os.environ.get('dbport', 5432))
 
 # Tables might change
 dbtbl_partner = args.dbtbl_partner if args.dbtbl_partner is not None else os.environ.get('dbtbl_partner', 'res_partner')
@@ -183,24 +182,29 @@ def listen():
                     parsed_payload["profile"] = profile
                     
                     string_payload = json.dumps(parsed_payload, cls=DateTimeEncoder)
-                    print(f"Payload: {parsed_payload}")
 
                     customer_barcode = parsed_payload["profile"]["barcode"]["value_text"]
                     customer_points_old = parsed_payload["old"]["points"]
                     customer_points_new = parsed_payload["new"]["points"]
-                    if customer_points_new != customer_points_old:
-                        print(f"Points have been updated from {customer_points_old} to {customer_points_new}.")
-                        for server in all_server:
-                            updateLoyaltyPoints(server["url"], server["database"], server["user"], server["password"], customer_barcode, customer_points_new, server["name"])
-
-                  #_new Send a POST request to the webhook with the event payload
-                    headers = {"Content-Type": "application/json"}
-                    response = requests.post(webhook_url, data=string_payload, headers=headers)
                     
-                    if response.status_code == 200:
-                        print("POST request to webhook sent successfully.")
-                    else:
-                        print(f"Failed to send POST request to webhook. Status code: {response.status_code}")
+                    # Check if the event made changes on the loyalty points
+                    if customer_points_new != customer_points_old:
+                        print(f"Payload: {parsed_payload}")
+                        print(f"Points have been updated from {customer_points_old} to {customer_points_new}.")
+                        # Update all Odoo servers using odoo API
+                        for server in all_server:
+                            print(f"Connecting to server: {server['name']} - ({server['url']})")
+                            updateLoyaltyPoints(server["url"], server["database"], server["user"], server["password"], customer_barcode, customer_points_new, server["name"])
+                            
+                        # Send a POST request to the webhook with the event payload
+                        if webhook_url:
+                            headers = {"Content-Type": "application/json"}
+                            response = requests.post(webhook_url, data=string_payload, headers=headers)
+                            
+                            if response.status_code == 200:
+                                print("POST request to webhook sent successfully.")
+                            else:
+                                print(f"Failed to send POST request to webhook. Status code: {response.status_code}")
                 else:
                     print(f"Ignored event with name: {event_name}")
 
@@ -215,7 +219,8 @@ def listen():
         # Set up a LISTEN command for the channel
         cur.execute(f"LISTEN {psql_channel}")
 
-        print(f"Webhook: {webhook_url}")
+        if webhook_url:
+            print(f"Webhook: {webhook_url}")
         print(f"Listening for {psql_channel} events...")
 
         while True:
@@ -313,12 +318,7 @@ DROP FUNCTION {trigger_name}Fn;
 
 def main():
     if args.action == "listen":
-        if webhook_url is not None:
-            listen()
-
-        else:
-            # Handle missing parameter
-            print("Error: webhook_url is required for listen.")
+        listen()
 
     elif args.action == "addtrigger":
         addtrigger()
