@@ -30,7 +30,7 @@ apt-get install python3-requests
 
 ```bash
 # copy .env.example to .env
-mv .env.example .env
+cp .env.example .env
 # then update the values accordingly
 ```
 
@@ -46,7 +46,7 @@ mv .env.example .env
 
 ```bash
 # copy servers.sample.json to servers.json
-mv servers.sample.json servers.json
+cp servers.sample.json servers.json
 # then update the list accordingly
 ```
 
