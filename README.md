@@ -25,10 +25,26 @@ apt-get install python3-psycopg2
 apt-get install python3-requests
 ```
 
+### Configure `.env`
+
+```bash
+# copy .env.example to .env
+mv .env.example .env
+# then update the values accordingly
+```
+
+### Important .env keys are:
+
+- `dbname` - the database name
+- `dbuser` - the database user
+- `dbpassword` - the database password of the user
+- `dbhost` - the database host or default localhost
+- `dbport` - the database port or default 5432
+
 ### Configure servers list `servers.json`
 
 ```bash
-# rename servers.sample.json to servers.json
+# copy servers.sample.json to servers.json
 mv servers.sample.json servers.json
 # then update the list accordingly
 ```
