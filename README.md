@@ -1,6 +1,6 @@
 # Odoo Loyalty Program - Extender
 
-## Sync Loyalty Programs from multiple database using unique customers barcode
+## Sync Loyalty Programs from multiple Odoo instances using the unique customer's barcode
 
 ### Requirements
 
@@ -8,7 +8,7 @@
 - Python
 - PostresSQL Database
 
-### Install Python the required modules
+### Install Python and the required modules
 
 ```bash
 # Note: `sudo` maybe required
