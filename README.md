@@ -8,17 +8,18 @@
 - Python
 - PostresSQL Database
 
-### Install the required module (must have python)
+### Install Python the required modules
 
 ```bash
 # Note: `sudo` maybe required
+# Python
 apt-get install python3
 
+# Modules
 # using pip
 pip3 install dotenv
 pip3 install psycopg2
 pip3 install requests
-
 # or using apt package manager
 apt-get install python3-dotenv
 apt-get install python3-psycopg2
