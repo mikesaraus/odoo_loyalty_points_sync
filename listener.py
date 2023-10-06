@@ -129,7 +129,7 @@ def odoo_createFn(odoo_models, odoo_uid, server_name, odoo, db, customer_barcode
 
     # Create ir_property
     profile_barcode = {
-        "res_id": tbl_customer_id,
+        "res_id":  "res.partner," + tbl_customer_id,
         "value_text": customer_barcode,
         "fields_id": parsed_payload["profile"]["barcode"]["fields_id"],
         "name": parsed_payload["profile"]["barcode"]["name"],
