@@ -36,11 +36,12 @@ cp .env.example .env
 
 ### Important .env keys are:
 
+- `loyalty_program_id` - <b>Important!</b> <b>Required!</b> The local id of the loyalty program; default = 1
 - `dbname` - the database name
 - `dbuser` - the database user
 - `dbpassword` - the database password of the user
-- `dbhost` - the database host or default localhost
-- `dbport` - the database port or default 5432
+- `dbhost` - the database host; default = localhost
+- `dbport` - the database port; default = 5432
 
 ### Configure servers list `servers.json`
 
@@ -57,3 +58,5 @@ python3 listener.py -h
 or
 python3 listener.py --help
 ```
+
+#### by [mike](https://github.com/mikesaraus)@[accountador.com](https://accountador.com)
