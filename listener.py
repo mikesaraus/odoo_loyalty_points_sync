@@ -2,12 +2,10 @@ import os
 import sys
 import json
 import argparse
-import xmlrpc.client
 from datetime import datetime
 from dotenv import load_dotenv
 import psycopg2
 import psycopg2.extensions
-import requests
 
 # Load environment variables from the .env file
 load_dotenv()
@@ -15,7 +13,7 @@ load_dotenv()
 parser = argparse.ArgumentParser(description="Odoo Loyalty Program - Extender")
 
 # Add command-line arguments
-parser.add_argument("action", choices=["listen", "addtrigger", "removetrigger"],nargs='?', default="listen", help="Specify the action to execute")
+parser.add_argument("action", choices=["listen", "install", "addtrigger", "removetrigger"],nargs='?', default="listen", help="Specify the action to execute")
 parser.add_argument("--loyalty_program_id", type=int, help="Required! The loyalty program id: default=1")
 parser.add_argument("--dbtable", type=str, help="Database table for the trigger")
 parser.add_argument("--dbname", type=str, help="Database name")
@@ -37,7 +35,7 @@ json_server_list_src = args.json_server_list_src if args.json_server_list_src is
 try:
     if json_server_list_src:
         with open(json_server_list_src, 'r') as json_file:
-            all_server = json.load(json_file)
+            all_servers = json.load(json_file)
     else:
         print("Error: A json file holding the list of servers to sync is required.")
         sys.exit(1)
@@ -47,8 +45,10 @@ except FileNotFoundError:
 except json.JSONDecodeError as e:
     print(f"Error decoding JSON: {e}")
     sys.exit(1)
+except Exception as e:
+    print(f"Error: {str(e)}")
 
-
+    
 # Loyalty Program ID
 loyalty_program_id = args.loyalty_program_id if args.loyalty_program_id is not None else os.environ.get('loyalty_program_id', 1)
 # PosgresSQL Notification Channel Name
@@ -92,6 +92,7 @@ class DateTimeEncoder(json.JSONEncoder):
     
 def updateLoyaltyPoints(server_name, odoo, db, customer_barcode, new_customer_points, parsed_payload):
     try:
+        import xmlrpc.client
         # Odoo API
         odoo_common = xmlrpc.client.ServerProxy('{}/xmlrpc/2/common'.format(odoo["url"]))
         print(f"{server_name}: Odoo Server: {odoo_common.version()}")
@@ -231,7 +232,7 @@ def listen():
                         print(f"Payload: {parsed_payload}")
                         print(f"Points have been updated from {customer_points_old} to {customer_points_new}.")
                         # Update all Odoo servers using odoo API
-                        for server in all_server:
+                        for server in all_servers:
                             print(f"Connecting to server: {server['name']} - ({server['url']})")
                             odoo = {
                                 "url": server["url"],
@@ -245,6 +246,7 @@ def listen():
                             
                         # Send a POST request to the webhook with the event payload
                         if webhook_url:
+                            import requests
                             headers = {"Content-Type": "application/json"}
                             response = requests.post(webhook_url, data=json.dumps(parsed_payload, cls=DateTimeEncoder), headers=headers)
                             
@@ -365,15 +367,18 @@ DROP FUNCTION {trigger_name}Fn;
 
 def main():
     if args.action == "listen":
+        # The default listener for PSQL
         if loyalty_program_id:
             listen()
         else:
             print("Error: Loyalty program ID is required.")
 
     elif args.action == "addtrigger":
+        # Add trigger to PSQL
         addtrigger()
 
     elif args.action == "removetrigger":
+        # Remove the trigger from PSQL
         removetrigger()
 
     else:
