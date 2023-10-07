@@ -15,15 +15,16 @@ load_dotenv()
 parser = argparse.ArgumentParser(description="Odoo Loyalty Program - Extender")
 
 # Add command-line arguments
-parser.add_argument("action", choices=["listen", "addtrigger", "removetrigger"], help="Specify the action to execute")
-parser.add_argument("--webhook", type=str, help="Webhook url to send post request on trigger")
-parser.add_argument("--channel", type=str, help="PostgresSQL channel name to broadcast and listen")
+parser.add_argument("action", choices=["listen", "addtrigger", "removetrigger"],nargs='?', default="listen", help="Specify the action to execute")
+parser.add_argument("--loyalty_program_id", type=int, help="Required! The loyalty program id: default=1")
 parser.add_argument("--dbtable", type=str, help="Database table for the trigger")
 parser.add_argument("--dbname", type=str, help="Database name")
 parser.add_argument("--dbuser", type=str, help="Database user")
 parser.add_argument("--dbpassword", type=str, help="Database user's password")
 parser.add_argument("--dbhost", type=str, help="Database hostname or ip")
 parser.add_argument("--dbport", type=int, help="Database port")
+parser.add_argument("--channel", type=str, help="PostgresSQL channel name to broadcast and listen")
+parser.add_argument("--webhook", type=str, help="Webhook url to send post request on trigger")
 parser.add_argument("--psql_trigger", type=str, help="Customized the trigger and function name")
 parser.add_argument("--dbtbl_partner", type=str, help="Table for partners; default: res_partner")
 parser.add_argument("--dbtbl_barcode", type=str, help="Table for barcode; default: ir_property")
@@ -48,14 +49,16 @@ except json.JSONDecodeError as e:
     sys.exit(1)
 
 
-# Webhook url
-webhook_url = args.webhook if args.webhook is not None else os.environ.get('webhook')
+# Loyalty Program ID
+loyalty_program_id = args.loyalty_program_id if args.loyalty_program_id is not None else os.environ.get('loyalty_program_id', 1)
 # PosgresSQL Notification Channel Name
 psql_channel = args.channel if args.channel is not None else os.environ.get('channel', 'loyalty_card_update')
-# Table for the trigger
-dbtable = args.dbtable if args.dbtable is not None else os.environ.get('dbtable', 'loyalty_card')
 # Name of the trigger
 trigger_name = args.psql_trigger if args.psql_trigger is not None else os.environ.get('psql_trigger', 'odooLoyaltyUpdate')
+# Table for the trigger
+dbtable = args.dbtable if args.dbtable is not None else os.environ.get('dbtable', 'loyalty_card')
+# Webhook url
+webhook_url = args.webhook if args.webhook is not None else os.environ.get('webhook')
 
 # Database credentials
 dbname = args.dbname if args.dbname is not None else os.environ.get('dbname')
@@ -115,7 +118,7 @@ def updateLoyaltyPoints(server_name, odoo, db, customer_barcode, new_customer_po
         print(f"Error: {str(e)}")
         
 def odoo_createFn(odoo_models, odoo_uid, server_name, odoo, db, customer_barcode, new_customer_points, parsed_payload):
-    print(f"{server_name}: Creating new customer.")
+    print(f"{server_name}: Creating NEW customer.")
     # Create res_partner
     # profile_payload = parsed_payload["profile"]["partner"]
     # del profile_payload["id"]
@@ -129,23 +132,24 @@ def odoo_createFn(odoo_models, odoo_uid, server_name, odoo, db, customer_barcode
 
     # Create ir_property
     profile_barcode = {
-        "res_id":  "res.partner," + tbl_customer_id,
+        "res_id":  "res.partner," + str(tbl_customer_id),
         "value_text": customer_barcode,
         "fields_id": parsed_payload["profile"]["barcode"]["fields_id"],
         "name": parsed_payload["profile"]["barcode"]["name"],
         "type": parsed_payload["profile"]["barcode"]["type"]
     }
     odoo_models.execute_kw(db["name"], odoo_uid, odoo["password"], 'ir.property', 'create', [profile_barcode])
-    print(f"{server_name}: Created customer's barcode details")
+    print(f"{server_name}: Created customer's barcode details - ({profile_barcode})")
 
     # Create loyalty_card
     profile_loyalty = {
         "partner_id": tbl_customer_id,
         "points": new_customer_points,
-        "code": parsed_payload["new"]["code"]
+        "code": parsed_payload["new"]["code"],
+        "program_id": loyalty_program_id
     }
     odoo_models.execute_kw(db["name"], odoo_uid, odoo["password"], 'loyalty.card', 'create', [profile_loyalty])
-    print(f"{server_name}: Created customer's loyalty details")
+    print(f"{server_name}: Created customer's loyalty details - ({profile_loyalty})")
 
 def odoo_updateFn(odoo_models, tbl_customer_id, odoo_uid, server_name, odoo, db, customer_barcode, new_customer_points):
     print(f"{server_name}: Updating existing customer.")
@@ -214,13 +218,10 @@ def listen():
                 event_name = notify.channel
 
                 if event_name == psql_channel:
-                    # Parsed json payload
+                    # Parsed JSON payload
                     parsed_payload = json.loads(notify.payload)
-                    profile = getCustomerProfile(parsed_payload["new"]["partner_id"])
-                    parsed_payload["profile"] = profile
+                    parsed_payload["profile"] = getCustomerProfile(parsed_payload["new"]["partner_id"])
                     
-                    string_payload = json.dumps(parsed_payload, cls=DateTimeEncoder)
-
                     customer_barcode = parsed_payload["profile"]["barcode"]["value_text"]
                     customer_points_old = parsed_payload["old"]["points"]
                     customer_points_new = parsed_payload["new"]["points"]
@@ -245,7 +246,7 @@ def listen():
                         # Send a POST request to the webhook with the event payload
                         if webhook_url:
                             headers = {"Content-Type": "application/json"}
-                            response = requests.post(webhook_url, data=string_payload, headers=headers)
+                            response = requests.post(webhook_url, data=json.dumps(parsed_payload, cls=DateTimeEncoder), headers=headers)
                             
                             if response.status_code == 200:
                                 print("POST request to webhook sent successfully.")
@@ -364,7 +365,10 @@ DROP FUNCTION {trigger_name}Fn;
 
 def main():
     if args.action == "listen":
-        listen()
+        if loyalty_program_id:
+            listen()
+        else:
+            print("Error: Loyalty program ID is required.")
 
     elif args.action == "addtrigger":
         addtrigger()
