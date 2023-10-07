@@ -55,7 +55,7 @@ cp servers.sample.json servers.json
 
 ```bash
 python3 listener.py -h
-or
+# or
 python3 listener.py --help
 ```
 
