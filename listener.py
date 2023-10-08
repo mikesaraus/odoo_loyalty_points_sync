@@ -13,7 +13,8 @@ load_dotenv()
 parser = argparse.ArgumentParser(description="Odoo Loyalty Program - Extender")
 
 # Add command-line arguments
-parser.add_argument("action", choices=["listen", "install", "addtrigger", "removetrigger"],nargs='?', default="listen", help="Specify the action to execute")
+parser.add_argument("action", choices=["listen", "install", "addtrigger", "removetrigger"], nargs='?', default="listen",
+                    help="Specify the action to execute")
 parser.add_argument("--loyalty_program_id", type=int, help="Required! The loyalty program id: default=1")
 parser.add_argument("--dbtable", type=str, help="Database table for the trigger")
 parser.add_argument("--dbname", type=str, help="Database name")
@@ -31,7 +32,8 @@ parser.add_argument("--json_server_list_src", type=str, help="A json file holdin
 args = parser.parse_args()
 
 # JSON server List
-json_server_list_src = args.json_server_list_src if args.json_server_list_src is not None else os.environ.get('json_server_list_src', 'servers.json')
+json_server_list_src = args.json_server_list_src if args.json_server_list_src is not None else os.environ.get(
+    'json_server_list_src', 'servers.json')
 try:
     if json_server_list_src:
         with open(json_server_list_src, 'r') as json_file:
@@ -41,20 +43,21 @@ try:
         sys.exit(1)
 except FileNotFoundError:
     print(f"The file '{json_server_list_src}' was not found.")
-    sys.exit(1) 
+    sys.exit(1)
 except json.JSONDecodeError as e:
     print(f"Error decoding JSON: {e}")
     sys.exit(1)
 except Exception as e:
     print(f"Error: {str(e)}")
 
-    
 # Loyalty Program ID
-loyalty_program_id = args.loyalty_program_id if args.loyalty_program_id is not None else os.environ.get('loyalty_program_id', 1)
+loyalty_program_id = args.loyalty_program_id if args.loyalty_program_id is not None else os.environ.get(
+    'loyalty_program_id', 1)
 # PosgresSQL Notification Channel Name
 psql_channel = args.channel if args.channel is not None else os.environ.get('channel', 'loyalty_card_update')
 # Name of the trigger
-trigger_name = args.psql_trigger if args.psql_trigger is not None else os.environ.get('psql_trigger', 'odooLoyaltyUpdate')
+trigger_name = args.psql_trigger if args.psql_trigger is not None else os.environ.get('psql_trigger',
+                                                                                      'odooLoyaltyUpdate')
 # Table for the trigger
 dbtable = args.dbtable if args.dbtable is not None else os.environ.get('dbtable', 'loyalty_card')
 # Webhook url
@@ -73,11 +76,11 @@ dbtbl_barcode = args.dbtbl_barcode if args.dbtbl_barcode is not None else os.env
 
 try:
     db_connection = psycopg2.connect(
-        dbname = dbname,
-        user = dbuser,
-        password = dbpassword,
-        host = dbhost,
-        port = dbport
+        dbname=dbname,
+        user=dbuser,
+        password=dbpassword,
+        host=dbhost,
+        port=dbport
     )
 except Exception as e:
     print(f"Error: {str(e)}")
@@ -89,7 +92,8 @@ class DateTimeEncoder(json.JSONEncoder):
         if isinstance(obj, datetime):
             return obj.isoformat()
         return super().default(obj)
-    
+
+
 def updateLoyaltyPoints(server_name, odoo, db, customer_barcode, new_customer_points, parsed_payload):
     try:
         import xmlrpc.client
@@ -103,21 +107,27 @@ def updateLoyaltyPoints(server_name, odoo, db, customer_barcode, new_customer_po
 
         # Search the barcode from table `ir_property` and get local customer identity
         print(f"{server_name}: Searching for customer with barcode: {customer_barcode}")
-        tbl_customer_barcode = odoo_models.execute_kw(db["name"], odoo_uid, odoo["password"], 'ir.property', 'search_read', [[['value_text', '=', customer_barcode],['name', '=', 'barcode']]], {'fields': ['res_id'], 'limit': 1})
-        
+        tbl_customer_barcode = odoo_models.execute_kw(db["name"], odoo_uid, odoo["password"], 'ir.property',
+                                                      'search_read', [[['value_text', '=', customer_barcode],
+                                                                       ['name', '=', 'barcode']]],
+                                                      {'fields': ['res_id'], 'limit': 1})
+
         if tbl_customer_barcode:
             # Update existing user
             tbl_customer_id = int(tbl_customer_barcode[0]["res_id"].split(',')[1])
             print(f"{server_name}: Local customer id found: {tbl_customer_id}")
-            
-            odoo_updateFn(odoo_models, tbl_customer_id, odoo_uid, server_name, odoo, db, customer_barcode, new_customer_points)
+
+            odoo_updateFn(odoo_models, tbl_customer_id, odoo_uid, server_name, odoo, db, customer_barcode,
+                          new_customer_points)
         else:
             # Create a new user
-            odoo_createFn(odoo_models, odoo_uid, server_name, odoo, db, customer_barcode, new_customer_points, parsed_payload)
+            odoo_createFn(odoo_models, odoo_uid, server_name, odoo, db, customer_barcode, new_customer_points,
+                          parsed_payload)
 
     except Exception as e:
         print(f"Error: {str(e)}")
-        
+
+
 def odoo_createFn(odoo_models, odoo_uid, server_name, odoo, db, customer_barcode, new_customer_points, parsed_payload):
     print(f"{server_name}: Creating NEW customer.")
     # Create res_partner
@@ -128,12 +138,13 @@ def odoo_createFn(odoo_models, odoo_uid, server_name, odoo, db, customer_barcode
         "display_name": parsed_payload["profile"]["partner"]["display_name"],
         "tz": parsed_payload["profile"]["partner"]["tz"]
     }
-    tbl_customer_id = odoo_models.execute_kw(db["name"], odoo_uid, odoo["password"], 'res.partner', 'create', [profile_payload])
+    tbl_customer_id = odoo_models.execute_kw(db["name"], odoo_uid, odoo["password"], 'res.partner', 'create',
+                                             [profile_payload])
     print(f"{server_name}: Created customer's profile - {tbl_customer_id}")
 
     # Create ir_property
     profile_barcode = {
-        "res_id":  "res.partner," + str(tbl_customer_id),
+        "res_id": "res.partner," + str(tbl_customer_id),
         "value_text": customer_barcode,
         "fields_id": parsed_payload["profile"]["barcode"]["fields_id"],
         "name": parsed_payload["profile"]["barcode"]["name"],
@@ -152,15 +163,19 @@ def odoo_createFn(odoo_models, odoo_uid, server_name, odoo, db, customer_barcode
     odoo_models.execute_kw(db["name"], odoo_uid, odoo["password"], 'loyalty.card', 'create', [profile_loyalty])
     print(f"{server_name}: Created customer's loyalty details - ({profile_loyalty})")
 
+
 def odoo_updateFn(odoo_models, tbl_customer_id, odoo_uid, server_name, odoo, db, customer_barcode, new_customer_points):
     print(f"{server_name}: Updating existing customer.")
     # Search for the id in loyalty card table
-    tbl_loyalty_card_ids = odoo_models.execute_kw(db["name"], odoo_uid, odoo["password"], 'loyalty.card', 'search', [[['partner_id', '=', tbl_customer_id]]], {'limit': 1})
+    tbl_loyalty_card_ids = odoo_models.execute_kw(db["name"], odoo_uid, odoo["password"], 'loyalty.card', 'search',
+                                                  [[['partner_id', '=', tbl_customer_id]]], {'limit': 1})
     print(f"{server_name}: Local customer's loyalty card id found: {tbl_loyalty_card_ids}")
-    
+
     # Update loyalty points
-    odoo_models.execute_kw(db["name"], odoo_uid, odoo["password"], 'loyalty.card', 'write', [tbl_loyalty_card_ids, {'points': new_customer_points}])
+    odoo_models.execute_kw(db["name"], odoo_uid, odoo["password"], 'loyalty.card', 'write',
+                           [tbl_loyalty_card_ids, {'points': new_customer_points}])
     print(f"{server_name}: Local customer's loyalty point updated: {new_customer_points}")
+
 
 def getCustomerProfile(id):
     try:
@@ -222,11 +237,11 @@ def listen():
                     # Parsed JSON payload
                     parsed_payload = json.loads(notify.payload)
                     parsed_payload["profile"] = getCustomerProfile(parsed_payload["new"]["partner_id"])
-                    
+
                     customer_barcode = parsed_payload["profile"]["barcode"]["value_text"]
                     customer_points_old = parsed_payload["old"]["points"]
                     customer_points_new = parsed_payload["new"]["points"]
-                    
+
                     # Check if the event made changes on the loyalty points
                     if customer_points_new != customer_points_old:
                         print(f"Payload: {parsed_payload}")
@@ -242,14 +257,16 @@ def listen():
                             db = {
                                 "name": server["database"],
                             }
-                            updateLoyaltyPoints(server["name"], odoo, db, customer_barcode, customer_points_new, parsed_payload)
-                            
+                            updateLoyaltyPoints(server["name"], odoo, db, customer_barcode, customer_points_new,
+                                                parsed_payload)
+
                         # Send a POST request to the webhook with the event payload
                         if webhook_url:
                             import requests
                             headers = {"Content-Type": "application/json"}
-                            response = requests.post(webhook_url, data=json.dumps(parsed_payload, cls=DateTimeEncoder), headers=headers)
-                            
+                            response = requests.post(webhook_url, data=json.dumps(parsed_payload, cls=DateTimeEncoder),
+                                                     headers=headers)
+
                             if response.status_code == 200:
                                 print("POST request to webhook sent successfully.")
                             else:
@@ -289,6 +306,7 @@ def listen():
             cur.close()
         if 'conn' in locals():
             conn.close()
+
 
 def addtrigger():
     try:
@@ -334,7 +352,7 @@ EXECUTE FUNCTION {trigger_name}Fn();
             cur.close()
         if 'conn' in locals():
             conn.close()
-    
+
 
 def removetrigger():
     try:
@@ -365,6 +383,7 @@ DROP FUNCTION {trigger_name}Fn;
         if 'conn' in locals():
             conn.close()
 
+
 def main():
     if args.action == "listen":
         # The default listener for PSQL
@@ -384,6 +403,7 @@ def main():
     else:
         # Handle invalid action
         print("Error: Invalid action specified.")
+
 
 if __name__ == "__main__":
     main()

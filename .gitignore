@@ -1,2 +1,14 @@
 .env
 servers.json
+
+.DS_Store
+.thumbs.db
+Thumbs.db
+
+# Editor directories and files
+.idea
+.vscode
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
