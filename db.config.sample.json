@@ -1,0 +1,10 @@
+[
+  {
+    "loyalty_program_id": 1,
+    "dbname": "",
+    "dbuser": "",
+    "dbpassword": "",
+    "dbhost": "localhost",
+    "dbport": 5432
+  }
+]
