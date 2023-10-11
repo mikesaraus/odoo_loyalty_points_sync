@@ -923,7 +923,7 @@ WantedBy=multi-user.target
         print("To start the service and enable it for auto-start on reboot, run:")
         print(f"  sudo systemctl start {service_unit_name}")
         print(f"  sudo systemctl enable {service_unit_name}")
-        print("Or reload the services:")
+        print("To reload the services:")
         print(f"  sudo systemctl daemon-reload")
 
     except Exception as e:
@@ -941,6 +941,9 @@ def service_uninstall():
 
             # Remove the service unit file
             os.remove(service_unit_path)
+
+            reload_systemctl = f"systemctl daemon-reload"
+            os.system(reload_systemctl)
 
             print(f"Service '{service_unit_name}' uninstalled.")
         else:
