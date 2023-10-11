@@ -46,7 +46,14 @@ profile_keys = [
 # Add command-line arguments
 parser.add_argument(
     "action",
-    choices=["listen", "install", "uninstall"],
+    choices=[
+        "listen",
+        "install",
+        "uninstall",
+        "service_install",
+        "service_uninstall",
+        "service",
+    ],
     nargs="?",
     default="listen",
     help="Specify the action to execute",
@@ -95,13 +102,29 @@ parser.add_argument(
     type=str,
     help="Customized the trigger channel for account update",
 )
+parser.add_argument(
+    "--service_unit_name",
+    type=str,
+    help="Service unit name to be created",
+)
 
 args = parser.parse_args()
 
 #
+# Service Information
+#
+service_name = "Odoo Service Listener by Accountador"
+service_unit_name = (
+    args.service_unit_name
+    if args.service_unit_name is not None
+    else os.environ.get("service_unit_name")
+) or "accountador_listener.service"
+service_dir = "/etc/systemd/system"
+
+
+#
 # Global Fallbacks
 #
-
 glob_dbname = args.dbname if args.dbname is not None else os.environ.get("dbname")
 glob_dbuser = args.dbuser if args.dbuser is not None else os.environ.get("dbuser")
 glob_dbpassword = (
@@ -860,6 +883,79 @@ def listen_all_databases(database_configs):
             executor.shutdown(wait=False)
 
 
+def service_install():
+    try:
+        # Check if the system supports .service files (systemd)
+        if not os.path.exists(service_dir):
+            print("This system does not support systemd service files (.service).")
+            return
+
+        # Check if the service unit file already exists
+        service_unit_path = f"{service_dir}/{service_unit_name}"
+        if os.path.exists(service_unit_path):
+            print(f"Service unit file '{service_unit_name}' already exists.")
+            return
+
+        username = (
+            os.getlogin() or os.environ["USER"]
+            if "USER" in os.environ
+            else os.environ["LOGNAME"]
+        )
+
+        # Define the service unit file contents
+        service_contents = f"""[Unit]
+Description={service_name}
+
+[Service]
+ExecStart={sys.executable} {os.path.abspath(__file__)}
+WorkingDirectory={os.path.dirname(os.path.abspath(__file__))}
+Restart=always
+User={username}
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+        # Write the service unit file
+        with open(service_unit_path, "w") as service_file:
+            service_file.write(service_contents)
+        print(f"Service unit file '{service_unit_name}' created.")
+        print("To start the service and enable it for auto-start on reboot, run:")
+        print(f"  sudo systemctl start {service_unit_name}")
+        print(f"  sudo systemctl enable {service_unit_name}")
+        print("Or reload the services:")
+        print(f"  sudo systemctl daemon-reload")
+
+    except Exception as e:
+        print(f"Service Error: {e}")
+
+
+def service_uninstall():
+    try:
+        service_unit_path = f"{service_dir}/{service_unit_name}"
+        # Check if the service unit file exists
+        if os.path.exists(service_unit_path):
+            # Stop the service if it's currently running
+            stop_command = f"systemctl stop {service_unit_name}"
+            os.system(stop_command)
+
+            # Remove the service unit file
+            os.remove(service_unit_path)
+
+            print(f"Service '{service_unit_name}' uninstalled.")
+        else:
+            print(f"Service '{service_unit_name}' is not installed on this system.")
+
+    except Exception as e:
+        print(f"Service Error: {e}")
+
+
+def check_sudo():
+    if os.geteuid() != 0:
+        return False
+    return True
+
+
 def main():
     if args.action == "listen":
         # The default; Start listener for PSQL events
@@ -876,6 +972,44 @@ def main():
         for cfg in all_databases:
             config = format_config(cfg)
             remove_trigger_fn(config)
+
+    elif args.action == "service_install":
+        if check_sudo():
+            # Install the service
+            service_install()
+        else:
+            print(
+                "Please run this script with superuser privileges (e.g., using 'sudo') to install or uninstall the service."
+            )
+
+    elif args.action == "service_uninstall":
+        if check_sudo():
+            # Uninstall the service
+            service_uninstall()
+        else:
+            print(
+                "Please run this script with superuser privileges (e.g., using 'sudo') to install or uninstall the service."
+            )
+
+    elif args.action == "service":
+        if check_sudo():
+            action = (
+                input(
+                    "Enter 'install' to install the service or 'uninstall' to uninstall it: "
+                )
+                .strip()
+                .lower()
+            )
+            if action == "install":
+                service_install()
+            elif action == "uninstall":
+                service_uninstall()
+            else:
+                print("Invalid action. Please enter 'install' or 'uninstall'.")
+        else:
+            print(
+                "Please run this script with superuser privileges (e.g., using 'sudo') to install or uninstall the service."
+            )
 
     else:
         # Handle invalid action
