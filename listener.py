@@ -1128,9 +1128,11 @@ def service_uninstall():
         service_unit_path = f"{service_dir}/{service_unit_name}"
         # Check if the service unit file exists
         if os.path.exists(service_unit_path):
+            # Disable the service if it's currently running
+            os.system(f"systemctl disable {service_unit_name}")
+
             # Stop the service if it's currently running
-            stop_command = f"systemctl stop {service_unit_name}"
-            os.system(stop_command)
+            os.system(f"systemctl stop {service_unit_name}")
 
             # Remove the service unit file
             os.remove(service_unit_path)
