@@ -5,7 +5,8 @@ import os
 import signal
 import sys
 import threading
-from datetime import datetime
+import datetime
+import logging
 
 import psycopg2
 import psycopg2.extensions
@@ -117,8 +118,44 @@ parser.add_argument(
     type=str,
     help="Service unit name to be created",
 )
+parser.add_argument(
+    "--log_directory",
+    type=str,
+    help="Log directory storage",
+)
 
 args = parser.parse_args()
+
+
+# Get current username
+def getusername():
+    return (
+        os.getlogin() or os.environ["USER"]
+        if "USER" in os.environ
+        else os.environ["LOGNAME"]
+    )
+
+
+# Create a "logs" directory if it doesn't exist
+log_dir = (
+    args.log_directory
+    if args.log_directory is not None
+    else os.environ.get("log_directory")
+) or "logs"
+os.makedirs(log_dir, exist_ok=True)
+
+# Define the log file path based on the current date
+log_file = os.path.join(log_dir, f"{getusername()}@{datetime.date.today()}.log")
+
+# Set up logging to log both to a file and to the console (CLI)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s]: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[logging.FileHandler(log_file, "a"), logging.StreamHandler()],
+)
+logger = logging.getLogger(__name__)
+
 
 #
 # Service Information
@@ -215,16 +252,18 @@ try:
         with open(json_server_list_src, "r") as json_file:
             all_servers = json.load(json_file)
     else:
-        print("Error: A json file holding the list of servers to sync is required.")
+        logger.error(
+            "Error: A json file holding the list of servers to sync is required."
+        )
         sys.exit(1)
 except FileNotFoundError:
-    print(f"The file '{json_server_list_src}' was not found.")
+    logger.error(f"The file '{json_server_list_src}' was not found.")
     sys.exit(1)
 except json.JSONDecodeError as e:
-    print(f"Error decoding JSON: {e}")
+    logger.error(f"Error decoding JSON: {e}")
     sys.exit(1)
 except Exception as e:
-    print(f"Error: {str(e)}")
+    logger.error(f"Error: {str(e)}")
 
 # JSON database List
 json_db_list_src = (
@@ -237,22 +276,24 @@ try:
         with open(json_db_list_src, "r") as json_file:
             all_databases = json.load(json_file)
     else:
-        print("Error: A json file holding the list of databases to listen is required.")
+        logger.error(
+            "Error: A json file holding the list of databases to listen is required."
+        )
         sys.exit(1)
 except FileNotFoundError:
-    print(f"The file '{json_db_list_src}' was not found.")
+    logger.error(f"The file '{json_db_list_src}' was not found.")
     sys.exit(1)
 except json.JSONDecodeError as e:
-    print(f"Error decoding JSON: {e}")
+    logger.error(f"Error decoding JSON: {e}")
     sys.exit(1)
 except Exception as e:
-    print(f"Error: {str(e)}")
+    logger.error(f"Error: {str(e)}")
 
 
 # Custom JSON encoder for datetime objects
 class DateTimeEncoder(json.JSONEncoder):
     def default(self, obj):
-        if isinstance(obj, datetime):
+        if isinstance(obj, datetime.datetime):
             return obj.isoformat()
         return super().default(obj)
 
@@ -266,7 +307,7 @@ def update_loyalty_card(
     customer_barcode_old="",
 ):
     try:
-        print("-" * 40)
+        logger.info("-" * 40)
 
         import xmlrpc.client
 
@@ -274,12 +315,12 @@ def update_loyalty_card(
         odoo_common = xmlrpc.client.ServerProxy(
             "{}/xmlrpc/2/common".format(server["url"])
         )
-        print(f"({connection_format(config)}) Odoo Server: {odoo_common.version()}")
+        logger.info(f"{connection_format(config)} Odoo Server: {odoo_common.version()}")
 
         odoo_uid = odoo_common.authenticate(
             server["database"], server["user"], server["password"], {}
         )
-        print(f"({connection_format(config)}) Odoo UID: {odoo_uid}")
+        logger.info(f"{connection_format(config)} Odoo UID: {odoo_uid}")
         odoo_models = xmlrpc.client.ServerProxy(
             "{}/xmlrpc/2/object".format(server["url"])
         )
@@ -289,8 +330,8 @@ def update_loyalty_card(
             query_barcode = customer_barcode_old
 
         # Search the barcode from table `ir_property` and get local customer identity
-        print(
-            f"({connection_format(config)}) Searching for customer with barcode: {query_barcode}"
+        logger.info(
+            f"{connection_format(config)} Searching for customer with barcode: {query_barcode}"
         )
         tbl_customer_barcode = odoo_models.execute_kw(
             server["database"],
@@ -305,8 +346,8 @@ def update_loyalty_card(
         if tbl_customer_barcode:
             # Update existing user
             tbl_customer_id = int(tbl_customer_barcode[0]["res_id"].split(",")[1])
-            print(
-                f"({connection_format(config)}) Local customer id found: {tbl_customer_id}"
+            logger.info(
+                f"{connection_format(config)} Local customer id found: {tbl_customer_id}"
             )
 
             odoo_update_fn(
@@ -332,7 +373,7 @@ def update_loyalty_card(
             )
 
     except Exception as e:
-        print(f"({connection_format(config)}) Error: {str(e)}")
+        logger.error(f"{connection_format(config)} Error: {str(e)}")
 
 
 def profile_payload_format(profile_info):
@@ -353,7 +394,7 @@ def profile_payload_compare(old_profile, new_profile):
 
 def odoo_update_customer_fn(config, server, customer_barcode, parsed_payload):
     try:
-        print("-" * 40)
+        logger.info("-" * 40)
 
         import xmlrpc.client
 
@@ -361,19 +402,19 @@ def odoo_update_customer_fn(config, server, customer_barcode, parsed_payload):
         odoo_common = xmlrpc.client.ServerProxy(
             "{}/xmlrpc/2/common".format(server["url"])
         )
-        print(f"({connection_format(config)}) Odoo Server: {odoo_common.version()}")
+        logger.info(f"{connection_format(config)} Odoo Server: {odoo_common.version()}")
 
         odoo_uid = odoo_common.authenticate(
             server["database"], server["user"], server["password"], {}
         )
-        print(f"({connection_format(config)}) Odoo UID: {odoo_uid}")
+        logger.info(f"{connection_format(config)} Odoo UID: {odoo_uid}")
         odoo_models = xmlrpc.client.ServerProxy(
             "{}/xmlrpc/2/object".format(server["url"])
         )
 
         # Search the barcode from table `ir_property` and get local customer identity
-        print(
-            f"({connection_format(config)}) Searching for customer with barcode: {customer_barcode}"
+        logger.info(
+            f"{connection_format(config)} Searching for customer with barcode: {customer_barcode}"
         )
 
         tbl_customer_barcode = odoo_models.execute_kw(
@@ -389,8 +430,8 @@ def odoo_update_customer_fn(config, server, customer_barcode, parsed_payload):
         if tbl_customer_barcode:
             # Update existing user
             tbl_customer_id = int(tbl_customer_barcode[0]["res_id"].split(",")[1])
-            print(
-                f"({connection_format(config)}) Local customer id found: {tbl_customer_id}"
+            logger.info(
+                f"{connection_format(config)} Local customer id found: {tbl_customer_id}"
             )
 
             # Update res_partner
@@ -403,8 +444,8 @@ def odoo_update_customer_fn(config, server, customer_barcode, parsed_payload):
                 "write",
                 [[tbl_customer_id], profile_payload],
             )
-            print(
-                f"({connection_format(config)}) Updated customer's profile - {tbl_customer_id}"
+            logger.info(
+                f"{connection_format(config)} Updated customer's profile - {tbl_customer_id}"
             )
         else:
             customer_points = (
@@ -421,7 +462,9 @@ def odoo_update_customer_fn(config, server, customer_barcode, parsed_payload):
                 parsed_payload,
             )
     except Exception as e:
-        print(f"({connection_format(config)}) Create or Update customer error: {e}")
+        logger.error(
+            f"{connection_format(config)} Create or Update customer error: {e}"
+        )
 
 
 def odoo_create_fn(
@@ -433,10 +476,10 @@ def odoo_create_fn(
     new_customer_points,
     parsed_payload,
 ):
-    print("-" * 40)
+    logger.info("-" * 40)
     # Create res_partner
     profile_payload = profile_payload_format(parsed_payload["profile"]["partner"])
-    print(f"({connection_format(config)}) Creating NEW customer. {profile_payload}")
+    logger.info(f"{connection_format(config)} Creating NEW customer. {profile_payload}")
     tbl_customer_id = odoo_models.execute_kw(
         server["database"],
         odoo_uid,
@@ -445,8 +488,8 @@ def odoo_create_fn(
         "create",
         [profile_payload],
     )
-    print(
-        f"({connection_format(config)}) Created customer's profile - {tbl_customer_id}"
+    logger.info(
+        f"{connection_format(config)} Created customer's profile - {tbl_customer_id}"
     )
 
     # Create ir_property
@@ -466,8 +509,8 @@ def odoo_create_fn(
         "create",
         [profile_barcode],
     )
-    print(
-        f"({connection_format(config)}) Created customer's barcode details - ({profile_barcode})"
+    logger.info(
+        f"{connection_format(config)} Created customer's barcode details - ({profile_barcode})"
     )
 
     # Create loyalty_card
@@ -484,8 +527,8 @@ def odoo_create_fn(
         "create",
         [profile_loyalty],
     )
-    print(
-        f"({connection_format(config)}) Created customer's loyalty details - ({profile_loyalty})"
+    logger.info(
+        f"{connection_format(config)} Created customer's loyalty details - ({profile_loyalty})"
     )
 
 
@@ -499,8 +542,8 @@ def odoo_update_fn(
     customer_barcode,
     customer_barcode_old,
 ):
-    print("-" * 40)
-    print(f"({connection_format(config)}) Updating existing customer.")
+    logger.info("-" * 40)
+    logger.info(f"{connection_format(config)} Updating existing customer.")
     # Search for the id in loyalty card table
     tbl_loyalty_card_ids = odoo_models.execute_kw(
         server["database"],
@@ -511,8 +554,8 @@ def odoo_update_fn(
         [[["partner_id", "=", tbl_customer_id]]],
         {"limit": 1},
     )
-    print(
-        f"({connection_format(config)}) Local customer's loyalty card id found: {tbl_loyalty_card_ids}"
+    logger.info(
+        f"{connection_format(config)} Local customer's loyalty card id found: {tbl_loyalty_card_ids}"
     )
 
     # Update loyalty points
@@ -525,13 +568,13 @@ def odoo_update_fn(
         "write",
         [tbl_loyalty_card_ids, loyalty_card_payload],
     )
-    print(
-        f"({connection_format(config)}) Local customer's loyalty points updated: {new_customer_points}"
+    logger.info(
+        f"{connection_format(config)} Local customer's loyalty points updated: {new_customer_points}"
     )
 
     if customer_barcode_old and customer_barcode != customer_barcode_old:
-        print(
-            f"({connection_format(config)}) Got a new barcode: {customer_barcode_old} to {customer_barcode}"
+        logger.info(
+            f"{connection_format(config)} Got a new barcode: {customer_barcode_old} to {customer_barcode}"
         )
         # Update customer barcode
         odoo_models.execute_kw(
@@ -542,8 +585,8 @@ def odoo_update_fn(
             "write",
             [tbl_loyalty_card_ids, {"value_text": customer_barcode}],
         )
-        print(
-            f"({connection_format(config)}) Local customer's barcode updated: {new_customer_points}"
+        logger.info(
+            f"{connection_format(config)} Local customer's barcode updated: {new_customer_points}"
         )
 
 
@@ -591,7 +634,7 @@ def get_customer_profile(config, user_id):
     except (psycopg2.DatabaseError, psycopg2.OperationalError) as e:
         # Rollback the transaction (if needed)
         # conn.rollback()
-        print(f"({connection_format(config)}) Error: {e}")
+        logger.error(f"{connection_format(config)} Error: {e}")
         return 0
 
     finally:
@@ -624,17 +667,19 @@ def listen(config):
 
                     # Check if the event made changes on the loyalty points
                     if customer_points_new != customer_points_old:
-                        # print(f"Payload: {parsed_payload}")
-                        print("+" * 40)
-                        print(f"New Loyalty Points Event {connection_format(config)}")
-                        print("+" * 40)
-                        print(
-                            f"({connection_format(config)}) Points have been updated from {customer_points_old} to {customer_points_new}."
+                        # logger.info(f"Payload: {parsed_payload}")
+                        logger.info("+" * 40)
+                        logger.info(
+                            f"New Loyalty Points Event {connection_format(config)}"
+                        )
+                        logger.info("+" * 40)
+                        logger.info(
+                            f"{connection_format(config)} Points have been updated from {customer_points_old} to {customer_points_new}."
                         )
                         # Update all Odoo servers using odoo API
                         for server in all_servers:
-                            print(
-                                f"({connection_format(config)}) Connecting to server: {server['name']} - ({server['url']})"
+                            logger.info(
+                                f"{connection_format(config)} Connecting to server: {server['name']} - ({server['url']})"
                             )
                             update_loyalty_card(
                                 config,
@@ -646,7 +691,7 @@ def listen(config):
 
                         # Send a POST request to the webhook with the event payload
                         if config["webhook_url"]:
-                            print("-" * 40)
+                            logger.info("-" * 40)
                             import requests
 
                             headers = {"Content-Type": "application/json"}
@@ -657,12 +702,12 @@ def listen(config):
                             )
 
                             if response.status_code == 200:
-                                print(
-                                    f"({connection_format(config)}) POST request to webhook sent successfully. - {config['webhook_url']}"
+                                logger.info(
+                                    f"{connection_format(config)} POST request to webhook sent successfully. - {config['webhook_url']}"
                                 )
                             else:
-                                print(
-                                    f"({connection_format(config)}) Failed to send POST request to webhook. Status code: {response.status_code}"
+                                logger.info(
+                                    f"{connection_format(config)} Failed to send POST request to webhook. Status code: {response.status_code}"
                                 )
 
                 elif event_name == config["psql_trigger_account_channel"]:
@@ -679,22 +724,22 @@ def listen(config):
                             "value_text"
                         ]
                         if customer_barcode:
-                            # print(f"Payload: {parsed_payload}")
-                            print("-" * 40)
-                            print(
-                                f"({connection_format(config)}) Event: Create or Update Account"
+                            # logger.info(f"Payload: {parsed_payload}")
+                            logger.info("-" * 40)
+                            logger.info(
+                                f"{connection_format(config)} Event: Create or Update Account"
                             )
                             # Update all Odoo servers using odoo API
                             for server in all_servers:
-                                print(
-                                    f"({connection_format(config)}) Connecting to server: {server['name']} - ({server['url']})"
+                                logger.info(
+                                    f"{connection_format(config)} Connecting to server: {server['name']} - ({server['url']})"
                                 )
                                 odoo_update_customer_fn(
                                     config, server, customer_barcode, parsed_payload
                                 )
                         else:
-                            print(
-                                f"({connection_format(config)}) Event: Account Update has no Barcode"
+                            logger.info(
+                                f"{connection_format(config)} Event: Account Update has no Barcode"
                             )
 
                 elif event_name == config["psql_trigger_barcode_channel"]:
@@ -703,13 +748,13 @@ def listen(config):
                     barcode_old = parsed_payload["old"]["value_text"]
                     barcode_new = parsed_payload["new"]["value_text"]
                     if barcode_old == barcode_new:
-                        print(
-                            f"({connection_format(config)}) Barcode Changes: from {barcode_old} to {barcode_new}"
+                        logger.info(
+                            f"{connection_format(config)} Barcode Changes: from {barcode_old} to {barcode_new}"
                         )
                         # Update all Odoo servers using odoo API
                         for server in all_servers:
-                            print(
-                                f"({connection_format(config)}) Connecting to server: {server['name']} - ({server['url']})"
+                            logger.info(
+                                f"{connection_format(config)} Connecting to server: {server['name']} - ({server['url']})"
                             )
                             # Update remote branch customer with old barcode to new barcode
                             update_loyalty_card(
@@ -722,12 +767,12 @@ def listen(config):
                             )
 
                 else:
-                    print(
-                        f"({connection_format(config)}) Ignored event with name: {event_name}"
+                    logger.error(
+                        f"{connection_format(config)} Ignored event with name: {event_name}"
                     )
 
             except Exception as e:
-                print(f"({connection_format(config)}) Error: {str(e)}")
+                logger.error(f"{connection_format(config)} Error: {str(e)}")
 
         # Connect to the database
         conn = psycopg2.connect(**config["db"])
@@ -736,24 +781,24 @@ def listen(config):
 
         # Set up a LISTENER for loyalty points
         cur.execute(f"LISTEN {config['psql_channel']}")
-        print(
-            f"({connection_format(config)}) Transaction Points: Listening for {config['psql_channel']} events..."
+        logger.info(
+            f"{connection_format(config)} Transaction Points: Listening for {config['psql_channel']} events..."
         )
 
         # Set up a LISTENER for profile update
         cur.execute(f"LISTEN {config['psql_trigger_account_channel']}")
-        print(
-            f"({connection_format(config)}) Account: Listening for {config['psql_trigger_account_channel']} events..."
+        logger.info(
+            f"{connection_format(config)} Account: Listening for {config['psql_trigger_account_channel']} events..."
         )
 
         # Set up a LISTENER for barcode update
         cur.execute(f"LISTEN {config['psql_trigger_barcode_channel']}")
-        print(
-            f"({connection_format(config)}) Barcode: Listening for {config['psql_trigger_barcode_channel']} events..."
+        logger.info(
+            f"{connection_format(config)} Barcode: Listening for {config['psql_trigger_barcode_channel']} events..."
         )
 
         if config["webhook_url"]:
-            print(f"({connection_format(config)}) Webhook: {config['webhook_url']}")
+            logger.info(f"{connection_format(config)} Webhook: {config['webhook_url']}")
 
         while not exit_flag.is_set():
             conn.poll()
@@ -764,10 +809,10 @@ def listen(config):
     except (psycopg2.DatabaseError, psycopg2.OperationalError) as e:
         # Rollback the transaction (if needed)
         # conn.rollback()
-        print(f"({connection_format(config)}) Error: {e}")
+        logger.error(f"{connection_format(config)} Error: {e}")
 
     except Exception as e:
-        print(f"({connection_format(config)}) Error: {e}")
+        logger.error(f"{connection_format(config)} Error: {e}")
 
     finally:
         # Close the cursor and connection
@@ -778,7 +823,7 @@ def listen(config):
 
 
 def connection_format(config):
-    return f"""{config['db']['dbname']}-{config['db']['user']}@{config['db']['host']}:{config['db']['port']}"""
+    return f"""({config['db']['dbname']}-{config['db']['user']}@{config['db']['host']}:{config['db']['port']})"""
 
 
 def sqlcmd_create_trigger(
@@ -833,8 +878,8 @@ def add_trigger_fn(config):
         )
         # Execute the command
         cur.execute(f"{sqlcmd_listen_loyalty_points}")
-        print(
-            f"({connection_format(config)}) Success: Added trigger {config['psql_trigger']} and function {config['psql_trigger']}Fn."
+        logger.info(
+            f"{connection_format(config)} Success: Added trigger {config['psql_trigger']} and function {config['psql_trigger']}Fn."
         )
 
         # The command to perform for account update listener
@@ -846,8 +891,8 @@ def add_trigger_fn(config):
         )
         # Execute the command
         cur.execute(f"{sqlcmd_listen_profile_update}")
-        print(
-            f"({connection_format(config)}) Success: Added trigger {config['psql_trigger_account']} and function {config['psql_trigger_account']}Fn."
+        logger.info(
+            f"{connection_format(config)} Success: Added trigger {config['psql_trigger_account']} and function {config['psql_trigger_account']}Fn."
         )
 
         # The command to perform for barcode update
@@ -859,14 +904,14 @@ def add_trigger_fn(config):
         )
         # Execute the command
         cur.execute(f"{sqlcmd_listen_barcode_update}")
-        print(
-            f"({connection_format(config)}) Success: Added trigger {config['psql_trigger_barcode']} and function {config['psql_trigger_barcode']}Fn."
+        logger.info(
+            f"{connection_format(config)} Success: Added trigger {config['psql_trigger_barcode']} and function {config['psql_trigger_barcode']}Fn."
         )
 
     except (psycopg2.DatabaseError, psycopg2.OperationalError) as e:
         # Rollback the transaction (if needed)
         # conn.rollback()
-        print(f"({connection_format(config)}) Error: {e}")
+        logger.error(f"{connection_format(config)} Error: {e}")
 
     finally:
         # Close the cursor and connection
@@ -889,8 +934,8 @@ def remove_trigger_fn(config):
         )
         # Execute the command
         cur.execute(f"{sqlcmd_unlisten_loyalty_points}")
-        print(
-            f"({connection_format(config)}) Success: Removed trigger {config['psql_trigger']} and function {config['psql_trigger']}Fn."
+        logger.info(
+            f"{connection_format(config)} Success: Removed trigger {config['psql_trigger']} and function {config['psql_trigger']}Fn."
         )
 
         # The command to perform profile update
@@ -899,8 +944,8 @@ def remove_trigger_fn(config):
         )
         # Execute the command
         cur.execute(f"{sqlcmd_unlisten_profile_update}")
-        print(
-            f"({connection_format(config)}) Success: Removed trigger {config['psql_trigger_account']} and function {config['psql_trigger_account']}Fn."
+        logger.info(
+            f"{connection_format(config)} Success: Removed trigger {config['psql_trigger_account']} and function {config['psql_trigger_account']}Fn."
         )
 
         # The command to perform barcode update
@@ -909,12 +954,12 @@ def remove_trigger_fn(config):
         )
         # Execute the command
         cur.execute(f"{sqlcmd_unlisten_barcode_update}")
-        print(
-            f"({connection_format(config)}) Success: Removed trigger {config['psql_trigger_barcode']} and function {config['psql_trigger_barcode']}Fn."
+        logger.info(
+            f"{connection_format(config)} Success: Removed trigger {config['psql_trigger_barcode']} and function {config['psql_trigger_barcode']}Fn."
         )
 
     except (psycopg2.DatabaseError, psycopg2.OperationalError) as e:
-        print(f"({connection_format(config)}) Error: {e}")
+        logger.error(f"{connection_format(config)} Error: {e}")
         # Rollback the transaction (if needed)
         # conn.rollback()
 
@@ -964,8 +1009,8 @@ def format_config(cfg):
 
 def stop_execution(signum, frame):
     # Function to handle stopping the execution gracefully
-    print("-" * 40)
-    print("Received Ctrl+C. Shutting down gracefully...")
+    logger.info("-" * 40)
+    logger.info("Received Ctrl+C. Shutting down gracefully...")
     exit_flag.set()
 
 
@@ -987,11 +1032,13 @@ def listen_all_databases(database_configs):
                 # Handle the result
                 result = listener_info.result()
                 if result:
-                    print(f"({connection_format(config)}) Listener result: {result}")
+                    logger.info(
+                        f"{connection_format(config)} Listener result: {result}"
+                    )
 
             except Exception as e:
                 # Handle exceptions raised by the task
-                print(f"({connection_format(config)}) Listener error: {e}")
+                logger.error(f"{connection_format(config)} Listener error: {e}")
                 pass
 
     except KeyboardInterrupt:
@@ -1006,20 +1053,18 @@ def service_install():
     try:
         # Check if the system supports .service files (systemd)
         if not os.path.exists(service_dir):
-            print("This system does not support systemd service files (.service).")
+            logger.info(
+                "This system does not support systemd service files (.service)."
+            )
             return
 
         # Check if the service unit file already exists
         service_unit_path = f"{service_dir}/{service_unit_name}"
         if os.path.exists(service_unit_path):
-            print(f"Service unit file '{service_unit_name}' already exists.")
+            logger.info(f"Service unit file '{service_unit_name}' already exists.")
             return
 
-        username = (
-            os.getlogin() or os.environ["USER"]
-            if "USER" in os.environ
-            else os.environ["LOGNAME"]
-        )
+        username = getusername()
 
         # Define the service unit file contents
         service_contents = f"""[Unit]
@@ -1038,20 +1083,20 @@ WantedBy=multi-user.target
         # Write the service unit file
         with open(service_unit_path, "w") as service_file:
             service_file.write(service_contents)
-        print("+" * 40)
-        print(f"Service unit file '{service_unit_name}' created.")
-        print("+" * 40)
-        print("To start the service and enable it for auto-start on reboot, run:")
-        print(f"  sudo systemctl start {service_unit_name}")
-        print(f"  sudo systemctl enable {service_unit_name}")
-        print("To reload the services:")
-        print(f"  sudo systemctl daemon-reload")
+        logger.info("+" * 40)
+        logger.info(f"Service unit file '{service_unit_name}' created.")
+        logger.info("+" * 40)
+        logger.info("To start the service and enable it for auto-start on reboot, run:")
+        logger.info(f"  sudo systemctl start {service_unit_name}")
+        logger.info(f"  sudo systemctl enable {service_unit_name}")
+        logger.info("To reload the services:")
+        logger.info(f"  sudo systemctl daemon-reload")
 
         reload_systemctl = f"systemctl daemon-reload"
         os.system(reload_systemctl)
 
     except Exception as e:
-        print(f"Service Error: {e}")
+        logger.error(f"Service Error: {e}")
 
 
 def service_uninstall():
@@ -1069,14 +1114,16 @@ def service_uninstall():
             reload_systemctl = f"systemctl daemon-reload"
             os.system(reload_systemctl)
 
-            print("-" * 40)
-            print(f"Service '{service_unit_name}' uninstalled.")
-            print("-" * 40)
+            logger.info("-" * 40)
+            logger.info(f"Service '{service_unit_name}' uninstalled.")
+            logger.info("-" * 40)
         else:
-            print(f"Service '{service_unit_name}' is not installed on this system.")
+            logger.error(
+                f"Service '{service_unit_name}' is not installed on this system."
+            )
 
     except Exception as e:
-        print(f"Service Error: {e}")
+        logger.error(f"Service Error: {e}")
 
 
 def check_sudo():
@@ -1107,7 +1154,7 @@ def main():
             # Install the service
             service_install()
         else:
-            print(
+            logger.error(
                 "Please run this script with superuser privileges (e.g., using 'sudo') to install or uninstall the service."
             )
 
@@ -1116,7 +1163,7 @@ def main():
             # Uninstall the service
             service_uninstall()
         else:
-            print(
+            logger.error(
                 "Please run this script with superuser privileges (e.g., using 'sudo') to install or uninstall the service."
             )
 
@@ -1134,15 +1181,15 @@ def main():
             elif action == "uninstall":
                 service_uninstall()
             else:
-                print("Invalid action. Please enter 'install' or 'uninstall'.")
+                logger.info("Invalid action. Please enter 'install' or 'uninstall'.")
         else:
-            print(
+            logger.info(
                 "Please run this script with superuser privileges (e.g., using 'sudo') to install or uninstall the service."
             )
 
     else:
         # Handle invalid action
-        print("Error: Invalid action specified.")
+        logger.info("Error: Invalid action specified.")
 
 
 if __name__ == "__main__":
