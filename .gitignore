@@ -2,6 +2,7 @@
 servers.json
 db.config.json
 
+
 .DS_Store
 .thumbs.db
 Thumbs.db
@@ -13,3 +14,7 @@ Thumbs.db
 *.ntvs*
 *.njsproj
 *.sln
+
+# Logs
+logs
+.logs
