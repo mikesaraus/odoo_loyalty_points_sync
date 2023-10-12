@@ -1,12 +1,12 @@
 import argparse
 import concurrent.futures
+import datetime
 import json
+import logging
 import os
 import signal
 import sys
 import threading
-import datetime
-import logging
 
 import psycopg2
 import psycopg2.extensions
@@ -123,8 +123,26 @@ parser.add_argument(
     type=str,
     help="Log directory storage",
 )
+parser.add_argument(
+    "--with_console",
+    type=str,
+    default="yes",
+    help="'yes' to Enable or 'no' to Disable console logs",
+)
 
 args = parser.parse_args()
+
+# Console log handler
+with_console = (
+    False
+    if (
+        args.with_console
+        if args.with_console is not None
+        else os.environ.get("with_console")
+    )
+    != "yes"
+    else True
+)
 
 
 # Get current username
@@ -136,23 +154,32 @@ def getusername():
     )
 
 
-# Create a "logs" directory if it doesn't exist
+# The log directory
 log_dir = (
     args.log_directory
     if args.log_directory is not None
     else os.environ.get("log_directory")
 ) or "logs"
+log_dir = os.path.abspath(log_dir)
+
+# Set the working directory explicitly to the directory where the log file is located
+os.chdir(os.path.dirname(log_dir))
+
+# Create a "logs" directory if it doesn't exist
 os.makedirs(log_dir, exist_ok=True)
 
 # Define the log file path based on the current date
 log_file = os.path.join(log_dir, f"{getusername()}@{datetime.date.today()}.log")
 
 # Set up logging to log both to a file and to the console (CLI)
+logging_handlers = [logging.FileHandler(log_file, "a")]
+if with_console:
+    logging_handlers.append(logging.StreamHandler())
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s]: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[logging.FileHandler(log_file, "a"), logging.StreamHandler()],
+    handlers=logging_handlers,
 )
 logger = logging.getLogger(__name__)
 
@@ -1071,7 +1098,7 @@ def service_install():
 Description={service_name}
 
 [Service]
-ExecStart={sys.executable} {os.path.abspath(__file__)}
+ExecStart={sys.executable} {os.path.abspath(__file__)} --with_console=no
 WorkingDirectory={os.path.dirname(os.path.abspath(__file__))}
 Restart=always
 User={username}
@@ -1091,9 +1118,6 @@ WantedBy=multi-user.target
         logger.info(f"  sudo systemctl enable {service_unit_name}")
         logger.info("To reload the services:")
         logger.info(f"  sudo systemctl daemon-reload")
-
-        reload_systemctl = f"systemctl daemon-reload"
-        os.system(reload_systemctl)
 
     except Exception as e:
         logger.error(f"Service Error: {e}")
