@@ -1098,7 +1098,7 @@ def service_install():
 Description={service_name}
 
 [Service]
-ExecStart={sys.executable} {os.path.abspath(__file__)} --with_console=no
+ExecStart={sys.executable} '{os.path.abspath(__file__)}' --with_console=no
 WorkingDirectory={os.path.dirname(os.path.abspath(__file__))}
 Restart=always
 User={username}
