@@ -148,10 +148,8 @@ with_console = (
 # Get current username
 def getusername():
     return (
-        os.getlogin() or os.environ["USER"]
-        if "USER" in os.environ
-        else os.environ["LOGNAME"]
-    )
+        os.environ["USER"] if "USER" in os.environ else os.environ["LOGNAME"]
+    ) or os.getlogin()
 
 
 # The log directory
@@ -1091,17 +1089,15 @@ def service_install():
             logger.info(f"Service unit file '{service_unit_name}' already exists.")
             return
 
-        username = getusername()
-
         # Define the service unit file contents
         service_contents = f"""[Unit]
 Description={service_name}
 
 [Service]
-ExecStart={sys.executable} '{os.path.abspath(__file__)}' --with_console=no
+ExecStart={sys.executable} {__file__} --with_console=no
 WorkingDirectory={os.path.dirname(os.path.abspath(__file__))}
 Restart=always
-User={username}
+User={getusername()}
 
 [Install]
 WantedBy=multi-user.target
