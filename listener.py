@@ -7,6 +7,7 @@ import os
 import signal
 import sys
 import threading
+import traceback
 
 import psycopg2
 import psycopg2.extensions
@@ -43,6 +44,8 @@ profile_keys = [
     "industry_id",
     "vat",
 ]
+
+sync_created_accounts = {}
 
 # Add command-line arguments
 parser.add_argument(
@@ -174,8 +177,8 @@ logging_handlers = [logging.FileHandler(log_file, "a")]
 if with_console:
     logging_handlers.append(logging.StreamHandler())
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s]: %(message)s",
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] [%(filename)s:%(lineno)d]: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
     handlers=logging_handlers,
 )
@@ -281,14 +284,18 @@ try:
             "Error: A json file holding the list of servers to sync is required."
         )
         sys.exit(1)
+
 except FileNotFoundError:
     logger.error(f"The file '{json_server_list_src}' was not found.")
     sys.exit(1)
+
 except json.JSONDecodeError as e:
     logger.error(f"Error decoding JSON: {e}")
     sys.exit(1)
+
 except Exception as e:
     logger.error(f"Error: {str(e)}")
+    traceback.print_exc()
 
 # JSON database List
 json_db_list_src = (
@@ -305,14 +312,18 @@ try:
             "Error: A json file holding the list of databases to listen is required."
         )
         sys.exit(1)
+
 except FileNotFoundError:
     logger.error(f"The file '{json_db_list_src}' was not found.")
     sys.exit(1)
+
 except json.JSONDecodeError as e:
     logger.error(f"Error decoding JSON: {e}")
     sys.exit(1)
+
 except Exception as e:
     logger.error(f"Error: {str(e)}")
+    traceback.print_exc()
 
 
 # Custom JSON encoder for datetime objects
@@ -321,6 +332,26 @@ class DateTimeEncoder(json.JSONEncoder):
         if isinstance(obj, datetime.datetime):
             return obj.isoformat()
         return super().default(obj)
+
+
+def custom_decoder(obj):
+    # Replace None with ""
+    return {k: v if v is not None else "" for k, v in obj.items()}
+
+
+def replace_none_with_empty_string(data):
+    if isinstance(data, dict):
+        return {
+            key: replace_none_with_empty_string(value) if value is not None else ""
+            for key, value in data.items()
+        }
+    elif isinstance(data, list):
+        return [
+            replace_none_with_empty_string(item) if item is not None else ""
+            for item in data
+        ]
+    else:
+        return data
 
 
 def update_loyalty_card(
@@ -370,7 +401,9 @@ def update_loyalty_card(
 
         if tbl_customer_barcode:
             # Update existing user
-            tbl_customer_id = int(tbl_customer_barcode[0]["res_id"].split(",")[1])
+            tbl_customer_id = int(
+                tbl_customer_barcode[0].get("res_id", []).split(",")[1]
+            )
             logger.info(
                 f"{connection_format(config)} Local customer id found: {tbl_customer_id}"
             )
@@ -399,6 +432,7 @@ def update_loyalty_card(
 
     except Exception as e:
         logger.error(f"{connection_format(config)} Error: {str(e)}")
+        traceback.print_exc()
 
 
 def profile_payload_format(profile_info):
@@ -408,11 +442,14 @@ def profile_payload_format(profile_info):
     return profile_payload
 
 
-def profile_payload_compare(old_profile, new_profile):
+def profile_payload_compare(config, old_profile, new_profile):
     has_changed = False
     for key in profile_keys:
         if old_profile[key] != new_profile[key]:
             has_changed = True
+            logger.info(
+                f"{connection_format(config)} Profile info changed: '{key}' from {old_profile[key]} to {new_profile[key]}"
+            )
             break
     return has_changed
 
@@ -454,7 +491,9 @@ def odoo_update_customer_fn(config, server, customer_barcode, parsed_payload):
 
         if tbl_customer_barcode:
             # Update existing user
-            tbl_customer_id = int(tbl_customer_barcode[0]["res_id"].split(",")[1])
+            tbl_customer_id = int(
+                tbl_customer_barcode[0].get("res_id", []).split(",")[1]
+            )
             logger.info(
                 f"{connection_format(config)} Local customer id found: {tbl_customer_id}"
             )
@@ -474,7 +513,8 @@ def odoo_update_customer_fn(config, server, customer_barcode, parsed_payload):
             )
         else:
             customer_points = (
-                parsed_payload["profile"]["loyalty_card"].get("points") or 0
+                parsed_payload.get("profile", {}).get("loyalty_card", {}).get("points")
+                or 0
             )
             # Create customers profile; res_partner
             odoo_create_fn(
@@ -486,10 +526,12 @@ def odoo_update_customer_fn(config, server, customer_barcode, parsed_payload):
                 customer_points,
                 parsed_payload,
             )
+
     except Exception as e:
         logger.error(
             f"{connection_format(config)} Create or Update customer error: {e}"
         )
+        traceback.print_exc()
 
 
 def odoo_create_fn(
@@ -503,7 +545,9 @@ def odoo_create_fn(
 ):
     logger.info("-" * 40)
     # Create res_partner
-    profile_payload = profile_payload_format(parsed_payload["profile"]["partner"])
+    profile_payload = profile_payload_format(
+        parsed_payload.get("profile", {}).get("partner", {})
+    )
     logger.info(f"{connection_format(config)} Creating NEW customer. {profile_payload}")
     tbl_customer_id = odoo_models.execute_kw(
         server["database"],
@@ -518,7 +562,7 @@ def odoo_create_fn(
     )
 
     # Create ir_property
-    barcode = parsed_payload["profile"]["barcode"]
+    barcode = parsed_payload.get("profile", {}).get("barcode", 0)
     profile_barcode = {
         "res_id": "res.partner," + str(tbl_customer_id),
         "value_text": customer_barcode or "",
@@ -615,7 +659,7 @@ def odoo_update_fn(
         )
 
 
-def get_customer_profile(config, user_id):
+def getlocal_customer_profile(config, user_id):
     try:
         # Connect to the database
         conn = psycopg2.connect(**config["db"])
@@ -675,12 +719,16 @@ def listen(config):
         # Set up a notification handler
         def notification_handler(notify):
             try:
+                if not notify.payload:
+                    return
+
                 event_name = notify.channel
 
+                # Parsed JSON payload
+                parsed_payload = json.loads(notify.payload)
+
                 if event_name == config["psql_channel"]:
-                    # Parsed JSON payload
-                    parsed_payload = json.loads(notify.payload)
-                    parsed_payload["profile"] = get_customer_profile(
+                    parsed_payload["profile"] = getlocal_customer_profile(
                         config, parsed_payload["new"].get("partner_id")
                     )
 
@@ -735,46 +783,25 @@ def listen(config):
                                     f"{connection_format(config)} Failed to send POST request to webhook. Status code: {response.status_code}"
                                 )
 
-                elif event_name == config["psql_trigger_account_channel"]:
-                    # Parsed JSON payload
-                    parsed_payload = json.loads(notify.payload)
-                    if profile_payload_compare(
-                        parsed_payload["old"], parsed_payload["new"]
-                    ):
-                        parsed_payload["profile"] = get_customer_profile(
-                            config, parsed_payload["new"]["id"]
-                        )
-
-                        customer_barcode = parsed_payload["profile"]["barcode"][
-                            "value_text"
-                        ]
-                        if customer_barcode:
-                            # logger.info(f"Payload: {parsed_payload}")
-                            logger.info("-" * 40)
-                            logger.info(
-                                f"{connection_format(config)} Event: Create or Update Account"
-                            )
-                            # Update all Odoo servers using odoo API
-                            for server in all_servers:
-                                logger.info(
-                                    f"{connection_format(config)} Connecting to server: {server['name']} - ({server['url']})"
-                                )
-                                odoo_update_customer_fn(
-                                    config, server, customer_barcode, parsed_payload
-                                )
-                        else:
-                            logger.info(
-                                f"{connection_format(config)} Event: Account Update has no Barcode"
-                            )
-
                 elif event_name == config["psql_trigger_barcode_channel"]:
-                    # Parsed JSON payload
-                    parsed_payload = json.loads(notify.payload)
-                    barcode_old = parsed_payload["old"]["value_text"]
-                    barcode_new = parsed_payload["new"]["value_text"]
-                    if barcode_old == barcode_new:
+                    barcode_old = parsed_payload.get("old", {}).get("value_text", 0)
+                    barcode_new = parsed_payload.get("new", {}).get("value_text", 0)
+                    if barcode_old != barcode_new:
                         logger.info(
                             f"{connection_format(config)} Barcode Changes: from {barcode_old} to {barcode_new}"
+                        )
+                        tbl_customer_id = int(
+                            parsed_payload.get("new", {})
+                            .get("res_id", "")
+                            .split(",")[1]
+                        )
+                        parsed_payload["profile"] = getlocal_customer_profile(
+                            config, tbl_customer_id
+                        )
+                        customer_points_new = (
+                            parsed_payload["profile"]
+                            .get("loyalty_card", {})
+                            .get("points", 0)
                         )
                         # Update all Odoo servers using odoo API
                         for server in all_servers:
@@ -791,6 +818,61 @@ def listen(config):
                                 barcode_old,
                             )
 
+                elif event_name == config["psql_trigger_account_channel"]:
+                    is_new_account = (
+                        True
+                        if parsed_payload.get("old", {}).get("id", 0) != 0
+                        else False
+                    )
+
+                    if profile_payload_compare(
+                        config,
+                        parsed_payload.get("old", {}),
+                        parsed_payload.get("new", {}),
+                    ):
+                        parsed_payload["profile"] = getlocal_customer_profile(
+                            config, parsed_payload.get("new", {}).get("id", 0)
+                        )
+
+                        customer_barcode = (
+                            parsed_payload["profile"]
+                            .get("barcode", {})
+                            .get("value_text", 0)
+                        )
+                        if customer_barcode:
+                            # logger.info(f"Payload: {parsed_payload}")
+                            logger.info("-" * 40)
+                            logger.info(
+                                f"{connection_format(config)} Event: {'Create' if is_new_account else 'Update'} Account"
+                            )
+                            # Update all Odoo servers using odoo API
+                            for server in all_servers:
+                                key_formatted = f"{datetime.datetime.now().strftime('%Y%m%d')}_{customer_barcode}"
+                                if is_new_account and server[
+                                    "database"
+                                ] in sync_created_accounts.get(key_formatted, []):
+                                    # Skip when db already sync
+                                    continue
+                                else:
+                                    # Add the database on the sync list
+                                    if not sync_created_accounts.get(
+                                        customer_barcode, 0
+                                    ):
+                                        sync_created_accounts[key_formatted] = []
+                                    sync_created_accounts[key_formatted].append(
+                                        server["database"]
+                                    )
+                                logger.info(
+                                    f"{connection_format(config)} Connecting to server: {server['name']} - ({server['url']})"
+                                )
+                                odoo_update_customer_fn(
+                                    config, server, customer_barcode, parsed_payload
+                                )
+                        else:
+                            logger.info(
+                                f"{connection_format(config)} Event: Account Update has no Barcode"
+                            )
+
                 else:
                     logger.error(
                         f"{connection_format(config)} Ignored event with name: {event_name}"
@@ -798,6 +880,7 @@ def listen(config):
 
             except Exception as e:
                 logger.error(f"{connection_format(config)} Error: {str(e)}")
+                traceback.print_exc()
 
         # Connect to the database
         conn = psycopg2.connect(**config["db"])
@@ -835,9 +918,11 @@ def listen(config):
         # Rollback the transaction (if needed)
         # conn.rollback()
         logger.error(f"{connection_format(config)} Error: {e}")
+        traceback.print_exc()
 
     except Exception as e:
         logger.error(f"{connection_format(config)} Error: {e}")
+        traceback.print_exc()
 
     finally:
         # Close the cursor and connection
@@ -848,7 +933,8 @@ def listen(config):
 
 
 def connection_format(config):
-    return f"""({config['db']['dbname']}-{config['db']['user']}@{config['db']['host']}:{config['db']['port']})"""
+    db = config.get("db", {})
+    return f"""({db.get('dbname', "UnknownDB")}-{db.get('user', "UnknownUser")}@{db.get('host', "UnknownHost")}:{db.get('port',"0")})"""
 
 
 def sqlcmd_create_trigger(
@@ -856,8 +942,10 @@ def sqlcmd_create_trigger(
     trigger_name,
     channel_name,
     trigger_on="INSERT OR UPDATE",
-    sql_payload="""'{"old": ' || row_to_json(OLD) || ', "new": ' || row_to_json(NEW) || '}'""",
+    sql_payload="",
 ):
+    if not sql_payload or sql_payload == "" or sql_payload == None:
+        sql_payload = """'{"old": ' || row_to_json(OLD) || ', "new": ' || row_to_json(NEW) || '}'"""
     sql_command = f"""
 -- Create a function to send a pg_notify event
 CREATE OR REPLACE FUNCTION {trigger_name}Fn()
@@ -925,7 +1013,7 @@ def add_trigger_fn(config):
             config["dbtbl_barcode"],
             config["psql_trigger_barcode"],
             config["psql_trigger_barcode_channel"],
-            "UPDATE",
+            "INSERT OR UPDATE",
         )
         # Execute the command
         cur.execute(f"{sqlcmd_listen_barcode_update}")
@@ -1064,6 +1152,7 @@ def listen_all_databases(database_configs):
             except Exception as e:
                 # Handle exceptions raised by the task
                 logger.error(f"{connection_format(config)} Listener error: {e}")
+                traceback.print_exc()
                 pass
 
     except KeyboardInterrupt:
@@ -1117,6 +1206,7 @@ WantedBy=multi-user.target
 
     except Exception as e:
         logger.error(f"Service Error: {e}")
+        traceback.print_exc()
 
 
 def service_uninstall():
@@ -1146,6 +1236,7 @@ def service_uninstall():
 
     except Exception as e:
         logger.error(f"Service Error: {e}")
+        traceback.print_exc()
 
 
 def check_sudo():
