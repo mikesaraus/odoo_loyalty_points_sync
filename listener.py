@@ -417,6 +417,7 @@ def update_loyalty_card(
                 new_customer_points,
                 customer_barcode,
                 customer_barcode_old,
+                tbl_customer_barcode,
             )
         else:
             # Create a new user
@@ -610,6 +611,7 @@ def odoo_update_fn(
     new_customer_points,
     customer_barcode,
     customer_barcode_old,
+    tbl_customer_barcode,
 ):
     logger.info("-" * 40)
     logger.info(f"{connection_format(config)} Updating existing customer.")
@@ -641,7 +643,11 @@ def odoo_update_fn(
         f"{connection_format(config)} Local customer's loyalty points updated: {new_customer_points}"
     )
 
-    if customer_barcode_old and customer_barcode != customer_barcode_old:
+    if (
+        customer_barcode_old
+        and tbl_customer_barcode
+        and customer_barcode != customer_barcode_old
+    ):
         logger.info(
             f"{connection_format(config)} Got a new barcode: {customer_barcode_old} to {customer_barcode}"
         )
@@ -652,7 +658,7 @@ def odoo_update_fn(
             server["password"],
             "ir.property",
             "write",
-            [tbl_loyalty_card_ids, {"value_text": customer_barcode}],
+            [tbl_customer_barcode, {"value_text": customer_barcode}],
         )
         logger.info(
             f"{connection_format(config)} Local customer's barcode updated: {new_customer_points}"
