@@ -7,6 +7,7 @@ import os
 import signal
 import sys
 import threading
+import time
 import traceback
 
 import psycopg2
@@ -735,6 +736,27 @@ def getlocal_customer_profile(config, user_id):
             conn.close()
 
 
+def connect_with_retry(config):
+    max_retries = 3  # Number of maximum connection retry attempts
+    retry_delay = 10  # Delay in seconds between retry attempts
+
+    for attempt in range(max_retries):
+        try:
+            # Attempt to establish a connection to the PostgreSQL database
+            connection = psycopg2.connect(**config["db"])
+
+            # If the connection is successful, return it
+            return connection
+        except psycopg2.OperationalError as e:
+            print(f"Connection attempt {attempt + 1} failed: {e}")
+            if attempt < max_retries - 1:
+                print(f"Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+
+    # If all retry attempts fail, raise an exception
+    raise Exception("Unable to establish a database connection after multiple retries")
+
+
 def listen(config):
     try:
         # Set up a notification handler
@@ -905,7 +927,7 @@ def listen(config):
                 traceback.print_exc()
 
         # Connect to the database
-        conn = psycopg2.connect(**config["db"])
+        conn = connect_with_retry(config)
         conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
         cur = conn.cursor()
 
