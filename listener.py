@@ -396,14 +396,26 @@ def update_loyalty_card(
             "ir.property",
             "search_read",
             [[["value_text", "=", query_barcode], ["name", "=", "barcode"]]],
-            {"fields": ["res_id"], "limit": 1},
+            {"fields": ["id", "res_id"], "limit": 1},
         )
+
+        if customer_barcode_old and not tbl_customer_barcode:
+            tbl_customer_barcode = odoo_models.execute_kw(
+                server["database"],
+                odoo_uid,
+                server["password"],
+                "ir.property",
+                "search_read",
+                [[["value_text", "=", customer_barcode], ["name", "=", "barcode"]]],
+                {"fields": ["id", "res_id"], "limit": 1},
+            )
 
         if tbl_customer_barcode:
             # Update existing user
             tbl_customer_id = int(
                 tbl_customer_barcode[0].get("res_id", []).split(",")[1]
             )
+            tbl_customer_barcode_id = int(tbl_customer_barcode[0].get("id"))
             logger.info(
                 f"{connection_format(config)} Local customer id found: {tbl_customer_id}"
             )
@@ -417,7 +429,7 @@ def update_loyalty_card(
                 new_customer_points,
                 customer_barcode,
                 customer_barcode_old,
-                tbl_customer_barcode,
+                tbl_customer_barcode_id,
             )
         else:
             # Create a new user
@@ -427,7 +439,7 @@ def update_loyalty_card(
                 odoo_uid,
                 server,
                 customer_barcode,
-                new_customer_points,
+                new_customer_points or 0,
                 parsed_payload,
             )
 
@@ -487,7 +499,7 @@ def odoo_update_customer_fn(config, server, customer_barcode, parsed_payload):
             "ir.property",
             "search_read",
             [[["value_text", "=", customer_barcode], ["name", "=", "barcode"]]],
-            {"fields": ["res_id"], "limit": 1},
+            {"fields": ["id", "res_id"], "limit": 1},
         )
 
         if tbl_customer_barcode:
@@ -563,13 +575,14 @@ def odoo_create_fn(
     )
 
     # Create ir_property
-    barcode = parsed_payload.get("profile", {}).get("barcode", 0)
+    barcode = parsed_payload.get("profile", {}).get("barcode", {})
     profile_barcode = {
         "res_id": "res.partner," + str(tbl_customer_id),
         "value_text": customer_barcode or "",
         "fields_id": barcode.get("fields_id") or "",
         "name": barcode.get("name") or "",
         "type": barcode.get("type") or "",
+        "company_id": barcode.get("company_id") or 1,
     }
     odoo_models.execute_kw(
         server["database"],
@@ -611,7 +624,7 @@ def odoo_update_fn(
     new_customer_points,
     customer_barcode,
     customer_barcode_old,
-    tbl_customer_barcode,
+    tbl_customer_barcode_id,
 ):
     logger.info("-" * 40)
     logger.info(f"{connection_format(config)} Updating existing customer.")
@@ -630,23 +643,25 @@ def odoo_update_fn(
     )
 
     # Update loyalty points
-    loyalty_card_payload = {"points": new_customer_points}
-    odoo_models.execute_kw(
-        server["database"],
-        odoo_uid,
-        server["password"],
-        "loyalty.card",
-        "write",
-        [tbl_loyalty_card_ids, loyalty_card_payload],
-    )
-    logger.info(
-        f"{connection_format(config)} Local customer's loyalty points updated: {new_customer_points}"
-    )
+    if new_customer_points != None:
+        loyalty_card_payload = {"points": new_customer_points}
+        odoo_models.execute_kw(
+            server["database"],
+            odoo_uid,
+            server["password"],
+            "loyalty.card",
+            "write",
+            [tbl_loyalty_card_ids, loyalty_card_payload],
+        )
+        logger.info(
+            f"{connection_format(config)} Local customer's loyalty points updated: {new_customer_points}"
+        )
 
     if (
         customer_barcode_old
-        and tbl_customer_barcode
+        and tbl_customer_barcode_id
         and customer_barcode != customer_barcode_old
+        and server["database"] != config.get("db", {})["dbname"]
     ):
         logger.info(
             f"{connection_format(config)} Got a new barcode: {customer_barcode_old} to {customer_barcode}"
@@ -658,10 +673,10 @@ def odoo_update_fn(
             server["password"],
             "ir.property",
             "write",
-            [tbl_customer_barcode, {"value_text": customer_barcode}],
+            [[tbl_customer_barcode_id], {"value_text": customer_barcode}],
         )
         logger.info(
-            f"{connection_format(config)} Local customer's barcode updated: {new_customer_points}"
+            f"{connection_format(config)} Local customer's barcode updated: {customer_barcode}"
         )
 
 
@@ -809,6 +824,7 @@ def listen(config):
                             .get("loyalty_card", {})
                             .get("points", 0)
                         )
+
                         # Update all Odoo servers using odoo API
                         for server in all_servers:
                             logger.info(
@@ -819,7 +835,7 @@ def listen(config):
                                 config,
                                 server,
                                 barcode_new,
-                                customer_points_new,
+                                None,
                                 parsed_payload,
                                 barcode_old,
                             )
