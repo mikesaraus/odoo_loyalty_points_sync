@@ -737,8 +737,8 @@ def getlocal_customer_profile(config, user_id):
 
 
 def connect_with_retry(config):
-    max_retries = 3  # Number of maximum connection retry attempts
-    retry_delay = 10  # Delay in seconds between retry attempts
+    max_retries = 1200  # Number of maximum connection retry attempts
+    retry_delay = 20  # Delay in seconds between retry attempts
 
     for attempt in range(max_retries):
         try:
