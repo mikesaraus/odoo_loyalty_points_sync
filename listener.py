@@ -13,6 +13,12 @@ import traceback
 import psycopg2
 import psycopg2.extensions
 from dotenv import load_dotenv
+from decimal import Decimal
+
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+
 
 exit_flag = threading.Event()
 
@@ -20,33 +26,15 @@ exit_flag = threading.Event()
 load_dotenv()
 
 # Argument parser
-parser = argparse.ArgumentParser(description="Odoo Loyalty Program - Extender")
+parser = argparse.ArgumentParser(description="Odoo Orders Listener - Sheets Sync")
 
-profile_keys = [
-    "first_name",
-    "middle_name",
-    "last_name",
-    "name",
-    "display_name",
-    "email",
-    "phone",
-    "mobile",
-    "title",
-    "tz",
-    "lang",
-    "website",
-    "type",
-    "street",
-    "street2",
-    "zip",
-    "city",
-    "state_id",
-    "country_id",
-    "industry_id",
-    "vat",
-]
-
-sync_created_accounts = {}
+event_trigger = 'pos_order'
+# Default Odoo Tables
+dbtbl_orders_table = "pos_order"
+dbtbl_order_line = "pos_order_line"
+dbtbl_payment = "pos_payment"
+dbtbl_payment_method = "pos_payment_method"
+dbtbl_product_tagging = "product_tag_product_template_rel"
 
 # Add command-line arguments
 parser.add_argument(
@@ -63,69 +51,38 @@ parser.add_argument(
     default="listen",
     help="Specify the action to execute",
 )
-parser.add_argument(
-    "--json_server_list_src",
-    type=str,
-    help="A json file holding the list of servers to sync",
-)
+
 parser.add_argument(
     "--json_db_list_src",
     type=str,
     help="A json file holding the list of database configs to listen",
 )
-parser.add_argument(
-    "--loyalty_program_id", type=int, help="Required! The loyalty program id: default=1"
-)
-parser.add_argument("--dbtable", type=str, help="Database table for the trigger")
-parser.add_argument("--dbname", type=str, help="Database name")
-parser.add_argument("--dbuser", type=str, help="Database user")
-parser.add_argument("--dbpassword", type=str, help="Database user's password")
-parser.add_argument("--dbhost", type=str, help="Database hostname or ip")
-parser.add_argument("--dbport", type=int, help="Database port")
-parser.add_argument(
-    "--channel", type=str, help="PostgresSQL channel name to broadcast and listen"
-)
-parser.add_argument(
-    "--webhook", type=str, help="Webhook url to send post request on trigger"
-)
-parser.add_argument(
-    "--psql_trigger", type=str, help="Customized the trigger and function name"
-)
-parser.add_argument(
-    "--dbtbl_partner", type=str, help="Table for partners; default: res_partner"
-)
-parser.add_argument(
-    "--dbtbl_barcode", type=str, help="Table for barcode; default: ir_property"
-)
-parser.add_argument(
-    "--psql_trigger_account",
-    type=str,
-    help="Customized the trigger and function name for account update",
-)
-parser.add_argument(
-    "--psql_trigger_account_channel",
-    type=str,
-    help="Customized the trigger channel for account update",
-)
-parser.add_argument(
-    "--psql_trigger_barcode",
-    type=str,
-    help="Customized the trigger and function name for barcode update",
-)
-parser.add_argument(
-    "--psql_trigger_barcode_channel",
-    type=str,
-    help="Customized the trigger channel for barcode update",
-)
-parser.add_argument(
-    "--service_unit_name",
-    type=str,
-    help="Service unit name to be created",
-)
+
 parser.add_argument(
     "--log_directory",
     type=str,
     help="Log directory storage",
+)
+parser.add_argument(
+    "--service_account_json",
+    type=str,
+    help="JSON credentials from google service account",
+)
+parser.add_argument(
+    "--google_sheet_id",
+    type=str,
+    help="The google sheet id; can be found in the url",
+)
+parser.add_argument(
+    "--tag_id",
+    type=int,
+    help="The product tag id to sync or sync all if unset",
+)
+parser.add_argument(
+    "--google_sheet_range",
+    type=str,
+    default="Sheet1!A2",
+    help="Sheet name and range as starting point when adding data",
 )
 parser.add_argument(
     "--with_console",
@@ -135,6 +92,29 @@ parser.add_argument(
 )
 
 args = parser.parse_args()
+
+glob_tag_id = (
+    args.tag_id
+    if args.tag_id is not None
+    else os.environ.get("tag_id")
+)
+
+# Google sheet ID and range to insert data into
+SHEET_ID = (
+    args.google_sheet_id
+    if args.google_sheet_id is not None
+    else os.environ.get("google_sheet_id")
+)
+RANGE = (
+    args.google_sheet_range
+    if args.google_sheet_range is not None
+    else os.environ.get("google_sheet_range")
+) or 'Sheet1!A2'
+SERVICE_ACCOUNT_JSON = (
+    args.service_account_json
+    if args.service_account_json is not None
+    else os.environ.get("service_account_json")
+) or 'credentials.json'
 
 # Console log handler
 with_console = (
@@ -185,118 +165,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
 #
 # Service Information
 #
-service_name = "Odoo Service Listener by Accountador"
-service_unit_name = (
-    args.service_unit_name
-    if args.service_unit_name is not None
-    else os.environ.get("service_unit_name")
-) or "accountador_listener.service"
+service_name = "Odoo Orders Listener by Accountador"
+service_unit_name = os.environ.get("service_unit_name") or "accountador_order_listener.service"
 service_dir = "/etc/systemd/system"
-
-
-#
-# Global Fallbacks
-#
-glob_dbname = args.dbname if args.dbname is not None else os.environ.get("dbname")
-glob_dbuser = args.dbuser if args.dbuser is not None else os.environ.get("dbuser")
-glob_dbpassword = (
-    args.dbpassword if args.dbpassword is not None else os.environ.get("dbpassword")
-)
-glob_dbhost = args.dbhost if args.dbhost is not None else os.environ.get("dbhost")
-glob_dbport = int(
-    args.dbport if args.dbport is not None else os.environ.get("dbport", 0)
-)
-
-# Loyalty Program ID
-glob_loyalty_program_id = (
-    args.loyalty_program_id
-    if args.loyalty_program_id is not None
-    else os.environ.get("loyalty_program_id")
-)
-# PosgresSQL Notification Channel Name
-glob_psql_channel = (
-    args.channel if args.channel is not None else os.environ.get("channel")
-)
-# Name of the trigger
-glob_trigger_name = (
-    args.psql_trigger
-    if args.psql_trigger is not None
-    else os.environ.get("psql_trigger")
-)
-# Name of the trigger for account update
-glob_trigger_account = (
-    args.psql_trigger_account
-    if args.psql_trigger_account is not None
-    else os.environ.get("psql_trigger_account")
-)
-# Name of the trigger channel for account update
-glob_trigger_account_channel = (
-    args.psql_trigger_account_channel
-    if args.psql_trigger_account_channel is not None
-    else os.environ.get("psql_trigger_account_channel")
-)
-# Name of the trigger for barcode update
-glob_trigger_barcode = (
-    args.psql_trigger_barcode
-    if args.psql_trigger_barcode is not None
-    else os.environ.get("psql_trigger_barcode")
-)
-# Name of the trigger channel for account update
-glob_trigger_barcode_channel = (
-    args.psql_trigger_barcode_channel
-    if args.psql_trigger_barcode_channel is not None
-    else os.environ.get("psql_trigger_barcode_channel")
-)
-# Table for the trigger
-glob_dbtable = args.dbtable if args.dbtable is not None else os.environ.get("dbtable")
-# Webhook url
-glob_webhook_url = (
-    args.webhook if args.webhook is not None else os.environ.get("webhook")
-)
-
-# Tables might change
-glob_dbtbl_partner = (
-    args.dbtbl_partner
-    if args.dbtbl_partner is not None
-    else os.environ.get("dbtbl_partner")
-)
-glob_dbtbl_barcode = (
-    args.dbtbl_barcode
-    if args.dbtbl_barcode is not None
-    else os.environ.get("dbtbl_barcode")
-)
-
-# JSON server List
-json_server_list_src = (
-    args.json_server_list_src
-    if args.json_server_list_src is not None
-    else os.environ.get("json_server_list_src", "servers.json")
-)
-try:
-    if json_server_list_src:
-        with open(json_server_list_src, "r") as json_file:
-            all_servers = json.load(json_file)
-    else:
-        logger.error(
-            "Error: A json file holding the list of servers to sync is required."
-        )
-        sys.exit(1)
-
-except FileNotFoundError:
-    logger.error(f"The file '{json_server_list_src}' was not found.")
-    sys.exit(1)
-
-except json.JSONDecodeError as e:
-    logger.error(f"Error decoding JSON: {e}")
-    sys.exit(1)
-
-except Exception as e:
-    logger.error(f"Error: {str(e)}")
-    traceback.print_exc()
 
 # JSON database List
 json_db_list_src = (
@@ -326,418 +200,58 @@ except Exception as e:
     logger.error(f"Error: {str(e)}")
     traceback.print_exc()
 
+def convert_decimal_fields(data):
+    """
+    Recursively converts Decimal fields in a dictionary to float.
+    """
+    for key, value in data.items():
+        if isinstance(value, Decimal):
+            data[key] = float(value)  # Convert Decimal to float
+        elif isinstance(value, dict):
+            # If the value is a nested dictionary, recurse
+            data[key] = convert_decimal_fields(value)
+    return data
 
-# Custom JSON encoder for datetime objects
-class DateTimeEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, datetime.datetime):
-            return obj.isoformat()
-        return super().default(obj)
-
-
-def custom_decoder(obj):
-    # Replace None with ""
-    return {k: v if v is not None else "" for k, v in obj.items()}
-
-
-def replace_none_with_empty_string(data):
-    if isinstance(data, dict):
-        return {
-            key: replace_none_with_empty_string(value) if value is not None else ""
-            for key, value in data.items()
-        }
-    elif isinstance(data, list):
-        return [
-            replace_none_with_empty_string(item) if item is not None else ""
-            for item in data
+def format_sync_data(data):
+    return [
+        [
+            entry["datetime"],
+            entry["pos_reference"],
+            entry["amount_total"],
+            entry["full_product_name"],
+            entry["qty"],
+            entry["price_unit"],
+            entry["price_subtotal_incl"],
+            entry["payment_method"]
         ]
-    else:
-        return data
+        for entry in data
+    ]
+    
 
-
-def update_loyalty_card(
-    config,
-    server,
-    customer_barcode,
-    new_customer_points,
-    parsed_payload,
-    customer_barcode_old="",
-):
+def sync_to_sheet(data):
+    formatted_data = format_sync_data(data)
+    # Load credentials from the service account JSON file
+    credentials = service_account.Credentials.from_service_account_file(
+        SERVICE_ACCOUNT_JSON, scopes=['https://www.googleapis.com/auth/spreadsheets']
+    )
+    # Build the Google Sheets API client
+    service = build('sheets', 'v4', credentials=credentials)
+        
     try:
-        logger.info("-" * 40)
-
-        import xmlrpc.client
-
-        # Odoo API
-        odoo_common = xmlrpc.client.ServerProxy(
-            "{}/xmlrpc/2/common".format(server["url"])
+        # Use 'spreadsheets.values.append' to add data to the sheet
+        request = service.spreadsheets().values().append(
+            spreadsheetId=SHEET_ID,
+            range=RANGE,
+            valueInputOption="RAW",  # or "USER_ENTERED" if you want Google Sheets to interpret values
+            body={"values": formatted_data}
         )
-        logger.info(f"{connection_format(config)} Odoo Server: {odoo_common.version()}")
-
-        odoo_uid = odoo_common.authenticate(
-            server["database"], server["user"], server["password"], {}
-        )
-        logger.info(f"{connection_format(config)} Odoo UID: {odoo_uid}")
-        odoo_models = xmlrpc.client.ServerProxy(
-            "{}/xmlrpc/2/object".format(server["url"])
-        )
-
-        query_barcode = customer_barcode
-        if customer_barcode_old:
-            query_barcode = customer_barcode_old
-
-        # Search the barcode from table `ir_property` and get local customer identity
-        logger.info(
-            f"{connection_format(config)} Searching for customer with barcode: {query_barcode}"
-        )
-        tbl_customer_barcode = odoo_models.execute_kw(
-            server["database"],
-            odoo_uid,
-            server["password"],
-            "ir.property",
-            "search_read",
-            [[["value_text", "=", query_barcode], ["name", "=", "barcode"]]],
-            {"fields": ["id", "res_id"], "limit": 1},
-        )
-
-        if customer_barcode_old and not tbl_customer_barcode:
-            tbl_customer_barcode = odoo_models.execute_kw(
-                server["database"],
-                odoo_uid,
-                server["password"],
-                "ir.property",
-                "search_read",
-                [[["value_text", "=", customer_barcode], ["name", "=", "barcode"]]],
-                {"fields": ["id", "res_id"], "limit": 1},
-            )
-
-        if tbl_customer_barcode:
-            # Update existing user
-            tbl_customer_id = int(
-                tbl_customer_barcode[0].get("res_id", []).split(",")[1]
-            )
-            tbl_customer_barcode_id = int(tbl_customer_barcode[0].get("id"))
-            logger.info(
-                f"{connection_format(config)} Local customer id found: {tbl_customer_id}"
-            )
-
-            odoo_update_fn(
-                config,
-                odoo_models,
-                tbl_customer_id,
-                odoo_uid,
-                server,
-                new_customer_points,
-                customer_barcode,
-                customer_barcode_old,
-                tbl_customer_barcode_id,
-            )
-        else:
-            # Create a new user
-            odoo_create_fn(
-                config,
-                odoo_models,
-                odoo_uid,
-                server,
-                customer_barcode,
-                new_customer_points or 0,
-                parsed_payload,
-            )
-
-    except Exception as e:
-        logger.error(f"{connection_format(config)} Error: {str(e)}")
-        traceback.print_exc()
-
-
-def profile_payload_format(profile_info):
-    profile_payload = {}
-    for key in profile_keys:
-        profile_payload[key] = profile_info[key] or ""
-    return profile_payload
-
-
-def profile_payload_compare(config, old_profile, new_profile):
-    has_changed = False
-    for key in profile_keys:
-        if old_profile[key] != new_profile[key]:
-            has_changed = True
-            logger.info(
-                f"{connection_format(config)} Profile info changed: '{key}' from {old_profile[key]} to {new_profile[key]}"
-            )
-            break
-    return has_changed
-
-
-def odoo_update_customer_fn(config, server, customer_barcode, parsed_payload):
-    try:
-        logger.info("-" * 40)
-
-        import xmlrpc.client
-
-        # Odoo API
-        odoo_common = xmlrpc.client.ServerProxy(
-            "{}/xmlrpc/2/common".format(server["url"])
-        )
-        logger.info(f"{connection_format(config)} Odoo Server: {odoo_common.version()}")
-
-        odoo_uid = odoo_common.authenticate(
-            server["database"], server["user"], server["password"], {}
-        )
-        logger.info(f"{connection_format(config)} Odoo UID: {odoo_uid}")
-        odoo_models = xmlrpc.client.ServerProxy(
-            "{}/xmlrpc/2/object".format(server["url"])
-        )
-
-        # Search the barcode from table `ir_property` and get local customer identity
-        logger.info(
-            f"{connection_format(config)} Searching for customer with barcode: {customer_barcode}"
-        )
-
-        tbl_customer_barcode = odoo_models.execute_kw(
-            server["database"],
-            odoo_uid,
-            server["password"],
-            "ir.property",
-            "search_read",
-            [[["value_text", "=", customer_barcode], ["name", "=", "barcode"]]],
-            {"fields": ["id", "res_id"], "limit": 1},
-        )
-
-        if tbl_customer_barcode:
-            # Update existing user
-            tbl_customer_id = int(
-                tbl_customer_barcode[0].get("res_id", []).split(",")[1]
-            )
-            logger.info(
-                f"{connection_format(config)} Local customer id found: {tbl_customer_id}"
-            )
-
-            # Update res_partner
-            profile_payload = profile_payload_format(parsed_payload["new"])
-            odoo_models.execute_kw(
-                server["database"],
-                odoo_uid,
-                server["password"],
-                "res.partner",
-                "write",
-                [[tbl_customer_id], profile_payload],
-            )
-            logger.info(
-                f"{connection_format(config)} Updated customer's profile - {tbl_customer_id}"
-            )
-        else:
-            customer_points = (
-                parsed_payload.get("profile", {}).get("loyalty_card", {}).get("points")
-                or 0
-            )
-            # Create customers profile; res_partner
-            odoo_create_fn(
-                config,
-                odoo_models,
-                odoo_uid,
-                server,
-                customer_barcode,
-                customer_points,
-                parsed_payload,
-            )
-
-    except Exception as e:
-        logger.error(
-            f"{connection_format(config)} Create or Update customer error: {e}"
-        )
-        traceback.print_exc()
-
-
-def odoo_create_fn(
-    config,
-    odoo_models,
-    odoo_uid,
-    server,
-    customer_barcode,
-    new_customer_points,
-    parsed_payload,
-):
-    logger.info("-" * 40)
-    # Create res_partner
-    profile_payload = profile_payload_format(
-        parsed_payload.get("profile", {}).get("partner", {})
-    )
-    logger.info(f"{connection_format(config)} Creating NEW customer. {profile_payload}")
-    tbl_customer_id = odoo_models.execute_kw(
-        server["database"],
-        odoo_uid,
-        server["password"],
-        "res.partner",
-        "create",
-        [profile_payload],
-    )
-    logger.info(
-        f"{connection_format(config)} Created customer's profile - {tbl_customer_id}"
-    )
-
-    # Create ir_property
-    barcode = parsed_payload.get("profile", {}).get("barcode", {})
-    profile_barcode = {
-        "res_id": "res.partner," + str(tbl_customer_id),
-        "value_text": customer_barcode or "",
-        "fields_id": barcode.get("fields_id") or "",
-        "name": barcode.get("name") or "",
-        "type": barcode.get("type") or "",
-        "company_id": barcode.get("company_id") or 1,
-    }
-    odoo_models.execute_kw(
-        server["database"],
-        odoo_uid,
-        server["password"],
-        "ir.property",
-        "create",
-        [profile_barcode],
-    )
-    logger.info(
-        f"{connection_format(config)} Created customer's barcode details - ({profile_barcode})"
-    )
-
-    # Create loyalty_card
-    profile_loyalty = {
-        "partner_id": tbl_customer_id,
-        "points": new_customer_points,
-        "program_id": config["loyalty_program_id"],
-    }
-    odoo_models.execute_kw(
-        server["database"],
-        odoo_uid,
-        server["password"],
-        "loyalty.card",
-        "create",
-        [profile_loyalty],
-    )
-    logger.info(
-        f"{connection_format(config)} Created customer's loyalty details - ({profile_loyalty})"
-    )
-
-
-def odoo_update_fn(
-    config,
-    odoo_models,
-    tbl_customer_id,
-    odoo_uid,
-    server,
-    new_customer_points,
-    customer_barcode,
-    customer_barcode_old,
-    tbl_customer_barcode_id,
-):
-    logger.info("-" * 40)
-    logger.info(f"{connection_format(config)} Updating existing customer.")
-    # Search for the id in loyalty card table
-    tbl_loyalty_card_ids = odoo_models.execute_kw(
-        server["database"],
-        odoo_uid,
-        server["password"],
-        "loyalty.card",
-        "search",
-        [[["partner_id", "=", tbl_customer_id]]],
-        {"limit": 1},
-    )
-    logger.info(
-        f"{connection_format(config)} Local customer's loyalty card id found: {tbl_loyalty_card_ids}"
-    )
-
-    # Update loyalty points
-    if new_customer_points != None:
-        loyalty_card_payload = {"points": new_customer_points}
-        odoo_models.execute_kw(
-            server["database"],
-            odoo_uid,
-            server["password"],
-            "loyalty.card",
-            "write",
-            [tbl_loyalty_card_ids, loyalty_card_payload],
-        )
-        logger.info(
-            f"{connection_format(config)} Local customer's loyalty points updated: {new_customer_points}"
-        )
-
-    if (
-        customer_barcode_old
-        and tbl_customer_barcode_id
-        and customer_barcode != customer_barcode_old
-        and server["database"] != config.get("db", {})["dbname"]
-    ):
-        logger.info(
-            f"{connection_format(config)} Got a new barcode: {customer_barcode_old} to {customer_barcode}"
-        )
-        # Update customer barcode
-        odoo_models.execute_kw(
-            server["database"],
-            odoo_uid,
-            server["password"],
-            "ir.property",
-            "write",
-            [[tbl_customer_barcode_id], {"value_text": customer_barcode}],
-        )
-        logger.info(
-            f"{connection_format(config)} Local customer's barcode updated: {customer_barcode}"
-        )
-
-
-def getlocal_customer_profile(config, user_id):
-    try:
-        # Connect to the database
-        conn = psycopg2.connect(**config["db"])
-        conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
-        cur = conn.cursor()
-
-        profile = {
-            "barcode": {},
-            "partner": {},
-            "loyalty_card": {},
-        }
-
-        # Unique customer from barcode table
-        cur.execute(
-            f"SELECT * FROM {config['dbtbl_barcode']} WHERE res_id='res.partner,{user_id}' AND name = 'barcode'"
-        )
-        barcode_data = cur.fetchone()
-        if barcode_data:
-            column_names = [desc[0] for desc in cur.description]
-            json_result = dict(zip(column_names, barcode_data))
-            profile["barcode"] = json_result
-
-        # Profile from partner table
-        cur.execute(f"SELECT * FROM {config['dbtbl_partner']} WHERE id={user_id}")
-        partner_data = cur.fetchone()
-        if partner_data:
-            column_names = [desc[0] for desc in cur.description]
-            json_result = dict(zip(column_names, partner_data))
-            profile["partner"] = json_result
-
-        # Profile from loyalty_card table
-        cur.execute(f"SELECT * FROM {config['dbtable']} WHERE partner_id={user_id}")
-        loyalty_card = cur.fetchone()
-        if loyalty_card:
-            column_names = [desc[0] for desc in cur.description]
-            json_result = dict(zip(column_names, loyalty_card))
-            profile["loyalty_card"] = json_result
-
-        return profile
-
-    except (psycopg2.DatabaseError, psycopg2.OperationalError) as e:
-        # Rollback the transaction (if needed)
-        # conn.rollback()
-        logger.error(f"{connection_format(config)} Error: {e}")
-        return 0
-
-    finally:
-        # Close the cursor and connection
-        if "cur" in locals():
-            cur.close()
-        if "conn" in locals():
-            conn.close()
-
+        response = request.execute()
+        print("Data added successfully:", response)
+    except HttpError as error:
+        print(f"An error occurred: {error}")
 
 def connect_with_retry(config):
-    max_retries = 1200  # Number of maximum connection retry attempts
+    max_retries = 2  # Number of maximum connection retry attempts
     retry_delay = 20  # Delay in seconds between retry attempts
 
     for attempt in range(max_retries):
@@ -756,6 +270,72 @@ def connect_with_retry(config):
     # If all retry attempts fail, raise an exception
     raise Exception("Unable to establish a database connection after multiple retries")
 
+def get_order_info(config, order_id):
+    try:
+        # Connect to the database
+        conn = psycopg2.connect(**config["db"])
+        conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
+        cur = conn.cursor()
+
+        payment_methods = []
+
+        # Get Payment Method Id
+        cur.execute(
+            f"SELECT payment_method_id, amount FROM {config['dbtbl_payment']} WHERE pos_order_id={order_id}"
+        )
+        row = cur.fetchall()
+        pm_column_names = [desc[0] for desc in cur.description]
+        for item in row:
+            payment_method = convert_decimal_fields(dict(zip(pm_column_names, item)))
+            # Get the payment method label
+            cur.execute(
+                f"SELECT name FROM {config['dbtbl_payment_method']} WHERE id={payment_method['payment_method_id']}"
+            )
+            label = cur.fetchone()[0]['en_US']
+            payment_method.update({ "label": label})
+            payment_methods.append(payment_method)
+        
+        formated_payment_method = ','.join([f"{item['label']}" for item in payment_methods])
+        order_lines = []
+
+        # Get Order Line
+        cur.execute(
+            f"SELECT product_id, full_product_name, qty, price_unit, price_subtotal_incl FROM {config['dbtbl_order_line']} WHERE order_id={order_id}"
+        )
+        # Fetch all rows
+        row = cur.fetchall()
+        ol_column_names = [desc[0] for desc in cur.description]
+        for item in row:
+            order_line = convert_decimal_fields(dict(zip(ol_column_names, item)))
+            product_id = order_line["product_id"]
+            # Check the product id if tagged to sync
+            cur.execute(
+                f"SELECT product_tag_id FROM {config['dbtbl_product_tagging']} WHERE product_template_id={product_id} AND product_tag_id={config["tag_id"]}"
+            )
+            found = cur.fetchone()
+            if found:
+                # Remove the product id in the object
+                del order_line["product_id"]
+                # Add order to collection
+                order_lines.append(order_line)
+
+        return {
+            "order_lines": order_lines,
+            "payment_methods": payment_methods
+            }
+
+    except (psycopg2.DatabaseError, psycopg2.OperationalError) as e:
+        # Rollback the transaction (if needed)
+        # conn.rollback()
+        logger.error(f"{connection_format(config)} Error: {e}")
+        return 0
+
+    finally:
+        # Close the cursor and connection
+        if "cur" in locals():
+            cur.close()
+        if "conn" in locals():
+            conn.close()
 
 def listen(config):
     try:
@@ -771,152 +351,43 @@ def listen(config):
                 parsed_payload = json.loads(notify.payload)
 
                 if event_name == config["psql_channel"]:
-                    parsed_payload["profile"] = getlocal_customer_profile(
-                        config, parsed_payload["new"].get("partner_id")
+                    logger.info(
+                        f"{connection_format(config)} New event: {event_name}"
                     )
-
-                    customer_barcode = (
-                        parsed_payload["profile"].get("barcode", {}).get("value_text")
-                    )
-                    customer_points_old = parsed_payload["old"].get("points")
-                    customer_points_new = parsed_payload["new"].get("points")
-
-                    # Check if the event made changes on the loyalty points
-                    if customer_points_new != customer_points_old:
-                        # logger.info(f"Payload: {parsed_payload}")
-                        logger.info("+" * 40)
-                        logger.info(
-                            f"New Loyalty Points Event {connection_format(config)}"
-                        )
-                        logger.info("+" * 40)
-                        logger.info(
-                            f"{connection_format(config)} Points have been updated from {customer_points_old} to {customer_points_new}."
-                        )
-                        # Update all Odoo servers using odoo API
-                        for server in all_servers:
-                            logger.info(
-                                f"{connection_format(config)} Connecting to server: {server['name']} - ({server['url']})"
-                            )
-                            update_loyalty_card(
-                                config,
-                                server,
-                                customer_barcode,
-                                customer_points_new,
-                                parsed_payload,
-                            )
-
-                        # Send a POST request to the webhook with the event payload
-                        if config["webhook_url"]:
-                            logger.info("-" * 40)
-                            import requests
-
-                            headers = {"Content-Type": "application/json"}
-                            response = requests.post(
-                                config["webhook_url"],
-                                data=json.dumps(parsed_payload, cls=DateTimeEncoder),
-                                headers=headers,
-                            )
-
-                            if response.status_code == 200:
-                                logger.info(
-                                    f"{connection_format(config)} POST request to webhook sent successfully. - {config['webhook_url']}"
-                                )
-                            else:
-                                logger.info(
-                                    f"{connection_format(config)} Failed to send POST request to webhook. Status code: {response.status_code}"
-                                )
-
-                elif event_name == config["psql_trigger_barcode_channel"]:
-                    barcode_old = parsed_payload.get("old", {}).get("value_text", 0)
-                    barcode_new = parsed_payload.get("new", {}).get("value_text", 0)
-                    if barcode_old != barcode_new:
-                        logger.info(
-                            f"{connection_format(config)} Barcode Changes: from {barcode_old} to {barcode_new}"
-                        )
-                        tbl_customer_id = int(
-                            parsed_payload.get("new", {})
-                            .get("res_id", "")
-                            .split(",")[1]
-                        )
-                        parsed_payload["profile"] = getlocal_customer_profile(
-                            config, tbl_customer_id
-                        )
-                        customer_points_new = (
-                            parsed_payload["profile"]
-                            .get("loyalty_card", {})
-                            .get("points", 0)
-                        )
-
-                        # Update all Odoo servers using odoo API
-                        for server in all_servers:
-                            logger.info(
-                                f"{connection_format(config)} Connecting to server: {server['name']} - ({server['url']})"
-                            )
-                            # Update remote branch customer with old barcode to new barcode
-                            update_loyalty_card(
-                                config,
-                                server,
-                                barcode_new,
-                                None,
-                                parsed_payload,
-                                barcode_old,
-                            )
-
-                elif event_name == config["psql_trigger_account_channel"]:
-                    is_new_account = (
-                        True
-                        if parsed_payload.get("old", {}).get("id", 0) != 0
-                        else False
-                    )
-
-                    if profile_payload_compare(
-                        config,
-                        parsed_payload.get("old", {}),
-                        parsed_payload.get("new", {}),
-                    ):
-                        parsed_payload["profile"] = getlocal_customer_profile(
-                            config, parsed_payload.get("new", {}).get("id", 0)
-                        )
-
-                        customer_barcode = (
-                            parsed_payload["profile"]
-                            .get("barcode", {})
-                            .get("value_text", 0)
-                        )
-                        if customer_barcode:
-                            # logger.info(f"Payload: {parsed_payload}")
-                            logger.info("-" * 40)
-                            logger.info(
-                                f"{connection_format(config)} Event: {'Create' if is_new_account else 'Update'} Account"
-                            )
-                            # Update all Odoo servers using odoo API
-                            for server in all_servers:
-                                key_formatted = f"{datetime.datetime.now().strftime('%Y%m%d')}_{customer_barcode}"
-                                if is_new_account and server[
-                                    "database"
-                                ] in sync_created_accounts.get(key_formatted, []):
-                                    # Skip when db already sync
-                                    continue
-                                else:
-                                    # Add the database on the sync list
-                                    if not sync_created_accounts.get(
-                                        customer_barcode, 0
-                                    ):
-                                        sync_created_accounts[key_formatted] = []
-                                    sync_created_accounts[key_formatted].append(
-                                        server["database"]
-                                    )
-                                logger.info(
-                                    f"{connection_format(config)} Connecting to server: {server['name']} - ({server['url']})"
-                                )
-                                odoo_update_customer_fn(
-                                    config, server, customer_barcode, parsed_payload
-                                )
+                    order_id = parsed_payload.get("id")
+                    
+                    sheet_payload = []
+                                        
+                    # Parse the date string safely, handle potential errors
+                    date_order = datetime.datetime.fromisoformat(parsed_payload.get("date_order"))
+                    
+                    # Create order info dict
+                    order_info = {
+                        "datetime": date_order.strftime('%Y-%m-%d %H:%M:%S'),
+                        "pos_reference": parsed_payload.get("pos_reference"),
+                        "amount_total": parsed_payload.get("amount_total")
+                    }
+                    # Order Datails
+                    order_data = get_order_info(config, order_id)
+                    logger.info(f"order_data {order_data}")
+                    # Payment Methods
+                    payment_methods = order_data.get("payment_methods")
+                    order_info.update({"payment_method": ','.join([f"{item['label']}" for item in payment_methods])})
+                    # Order Lines
+                    order_lines = order_data.get("order_lines")
+                    # Loop each order line
+                    for index, order_line in enumerate(order_lines):
+                        if index == 0:
+                            sheet_payload.append({**order_line, **order_info})
                         else:
-                            logger.info(
-                                f"{connection_format(config)} Event: Account Update has no Barcode"
-                            )
-
+                            merged_item = order_line.copy()
+                            for key in order_info:
+                                if key not in order_line:
+                                    merged_item[key] = ""
+                            sheet_payload.append(merged_item)
+                    logger.info(f"sheet_payload {sheet_payload}")
+                    sync_to_sheet(sheet_payload)
+                    
                 else:
                     logger.error(
                         f"{connection_format(config)} Ignored event with name: {event_name}"
@@ -934,23 +405,8 @@ def listen(config):
         # Set up a LISTENER for loyalty points
         cur.execute(f"LISTEN {config['psql_channel']}")
         logger.info(
-            f"{connection_format(config)} Transaction Points: Listening for {config['psql_channel']} events..."
+            f"{connection_format(config)}: Listening for {config['psql_channel']} events..."
         )
-
-        # Set up a LISTENER for profile update
-        cur.execute(f"LISTEN {config['psql_trigger_account_channel']}")
-        logger.info(
-            f"{connection_format(config)} Account: Listening for {config['psql_trigger_account_channel']} events..."
-        )
-
-        # Set up a LISTENER for barcode update
-        cur.execute(f"LISTEN {config['psql_trigger_barcode_channel']}")
-        logger.info(
-            f"{connection_format(config)} Barcode: Listening for {config['psql_trigger_barcode_channel']} events..."
-        )
-
-        if config["webhook_url"]:
-            logger.info(f"{connection_format(config)} Webhook: {config['webhook_url']}")
 
         while not exit_flag.is_set():
             conn.poll()
@@ -985,11 +441,11 @@ def sqlcmd_create_trigger(
     dbtable,
     trigger_name,
     channel_name,
-    trigger_on="INSERT OR UPDATE",
+    trigger_on="INSERT",
     sql_payload="",
 ):
     if not sql_payload or sql_payload == "" or sql_payload == None:
-        sql_payload = """'{"old": ' || row_to_json(OLD) || ', "new": ' || row_to_json(NEW) || '}'"""
+        sql_payload = """row_to_json(NEW)::text"""
     sql_command = f"""
 -- Create a function to send a pg_notify event
 CREATE OR REPLACE FUNCTION {trigger_name}Fn()
@@ -1030,39 +486,13 @@ def add_trigger_fn(config):
         cur = conn.cursor()
 
         # The command to perform for loyalty points listener
-        sqlcmd_listen_loyalty_points = sqlcmd_create_trigger(
-            config["dbtable"], config["psql_trigger"], config["psql_channel"]
+        sqlcmd_trigger = sqlcmd_create_trigger(
+            config["dbtable"], config["psql_trigger"], config["psql_channel"], "INSERT"
         )
         # Execute the command
-        cur.execute(f"{sqlcmd_listen_loyalty_points}")
+        cur.execute(f"{sqlcmd_trigger}")
         logger.info(
             f"{connection_format(config)} Success: Added trigger {config['psql_trigger']} and function {config['psql_trigger']}Fn."
-        )
-
-        # The command to perform for account update listener
-        sqlcmd_listen_profile_update = sqlcmd_create_trigger(
-            config["dbtbl_partner"],
-            config["psql_trigger_account"],
-            config["psql_trigger_account_channel"],
-            "UPDATE",
-        )
-        # Execute the command
-        cur.execute(f"{sqlcmd_listen_profile_update}")
-        logger.info(
-            f"{connection_format(config)} Success: Added trigger {config['psql_trigger_account']} and function {config['psql_trigger_account']}Fn."
-        )
-
-        # The command to perform for barcode update
-        sqlcmd_listen_barcode_update = sqlcmd_create_trigger(
-            config["dbtbl_barcode"],
-            config["psql_trigger_barcode"],
-            config["psql_trigger_barcode_channel"],
-            "INSERT OR UPDATE",
-        )
-        # Execute the command
-        cur.execute(f"{sqlcmd_listen_barcode_update}")
-        logger.info(
-            f"{connection_format(config)} Success: Added trigger {config['psql_trigger_barcode']} and function {config['psql_trigger_barcode']}Fn."
         )
 
     except (psycopg2.DatabaseError, psycopg2.OperationalError) as e:
@@ -1095,26 +525,6 @@ def remove_trigger_fn(config):
             f"{connection_format(config)} Success: Removed trigger {config['psql_trigger']} and function {config['psql_trigger']}Fn."
         )
 
-        # The command to perform profile update
-        sqlcmd_unlisten_profile_update = sqlcmd_remove_trigger(
-            config["dbtbl_partner"], config["psql_trigger_account"]
-        )
-        # Execute the command
-        cur.execute(f"{sqlcmd_unlisten_profile_update}")
-        logger.info(
-            f"{connection_format(config)} Success: Removed trigger {config['psql_trigger_account']} and function {config['psql_trigger_account']}Fn."
-        )
-
-        # The command to perform barcode update
-        sqlcmd_unlisten_barcode_update = sqlcmd_remove_trigger(
-            config["dbtbl_barcode"], config["psql_trigger_barcode"]
-        )
-        # Execute the command
-        cur.execute(f"{sqlcmd_unlisten_barcode_update}")
-        logger.info(
-            f"{connection_format(config)} Success: Removed trigger {config['psql_trigger_barcode']} and function {config['psql_trigger_barcode']}Fn."
-        )
-
     except (psycopg2.DatabaseError, psycopg2.OperationalError) as e:
         logger.error(f"{connection_format(config)} Error: {e}")
         # Rollback the transaction (if needed)
@@ -1130,36 +540,21 @@ def remove_trigger_fn(config):
 
 def format_config(cfg):
     config = {
-        "loyalty_program_id": int(
-            cfg.get("loyalty_program_id", glob_loyalty_program_id or 1)
-        ),
         "db": {
-            "dbname": cfg.get("dbname", glob_dbname),
-            "user": cfg.get("dbuser", glob_dbuser),
-            "password": cfg.get("dbpassword", glob_dbpassword),
-            "host": cfg.get("dbhost", glob_dbhost) or "localhost",
-            "port": int(cfg.get("dbport", glob_dbport) or 5432),
+            "dbname": cfg.get("dbname"),
+            "user": cfg.get("dbuser"),
+            "password": cfg.get("dbpassword"),
+            "host": cfg.get("dbhost", 'localhost'),
+            "port": int(cfg.get("dbport", 5432)),
         },
-        "dbtable": cfg.get("dbtable", glob_dbtable) or "loyalty_card",
-        "webhook_url": cfg.get("webhook", glob_webhook_url),
-        "psql_channel": cfg.get("channel", glob_psql_channel)
-        or "accountador_loyalty_card_update",
-        "psql_trigger": cfg.get("psql_trigger", glob_trigger_name)
-        or "accountador_loyalty_card_update",
-        "dbtbl_partner": cfg.get("dbtbl_partner", glob_dbtbl_partner) or "res_partner",
-        "dbtbl_barcode": cfg.get("dbtbl_barcode", glob_dbtbl_barcode) or "ir_property",
-        "psql_trigger_account": cfg.get("psql_trigger_account", glob_trigger_account)
-        or "accountador_account_update",
-        "psql_trigger_account_channel": cfg.get(
-            "psql_trigger_account_channel", glob_trigger_account_channel
-        )
-        or "accountador_account_update",
-        "psql_trigger_barcode": cfg.get("psql_trigger_barcode", glob_trigger_barcode)
-        or "accountador_barcode_update",
-        "psql_trigger_barcode_channel": cfg.get(
-            "psql_trigger_barcode_channel", glob_trigger_barcode_channel
-        )
-        or "accountador_barcode_update",
+        "tag_id": cfg.get("tag_id", glob_tag_id),
+        "psql_trigger": event_trigger,
+        "psql_channel": event_trigger,
+        "dbtable": dbtbl_orders_table,
+        "dbtbl_order_line": dbtbl_order_line,
+        "dbtbl_payment": dbtbl_payment,
+        "dbtbl_payment_method": dbtbl_payment_method,
+        "dbtbl_product_tagging": dbtbl_product_tagging
     }
     return config
 

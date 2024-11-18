@@ -17,21 +17,20 @@ Configure customer to have a unique `barcode` as it is used to identify unique c
 ### Install Python and the required modules
 
 ```bash
-# Note: `sudo` maybe required
 # Python
-apt install python3
+sudo apt install python3
 # Pip
-apt install python3-pip
+sudo apt install python3-pip
 
 # Modules
 # using pip
+pip3 install -r requirements.txt
+# or
 pip3 install dotenv
 pip3 install psycopg2
 pip3 install requests
-# or using apt package manager
-apt install python3-dotenv
-apt install python3-psycopg2
-apt install python3-requests
+# or using apt package manager for system wide (service)
+sudo apt install python3-dotenv python3-psycopg2 python3-requests
 ```
 
 ### Configure `.env`
